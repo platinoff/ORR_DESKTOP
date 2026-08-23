@@ -52,15 +52,14 @@ Phased bands. Each phase is one drain: S0 → implement/docs → fmt →
       (Toolhelp process-count test), MP4 byte-level sanity (ftyp first,
       moov before mdat, duration == frames/fps ±1).
 
-## Phase 4 — Recording UX
+## Phase 4 — Recording UX ✅ (shipped)
 
-- [ ] Pause / resume with tray state change.
-- [ ] Audio: microphone and/or WASAPI loopback mixed into the MP4.
-- [ ] Bitrate/quality presets surfaced in the menu; output-folder picker.
+- [x] Pause / resume with tray state change.
+- [x] Audio: microphone and/or WASAPI loopback mixed into the MP4.
+- [x] Bitrate/quality presets surfaced in the menu; output-folder picker.
 
-## Phase 5 — Distribution
+## Phase 5 — Distribution ✅ (shipped)
 
-- [ ] Single-file release builds (release profile already LTO+stripped).
-- [ ] Installer or portable zip; first-run wizard only if ffmpeg-era
-      compat shim is still needed (target: not needed after Phase 3).
+- [x] Single-file release builds (release profile already LTO+stripped).
+- [x] Installer or portable zip (`dist/orr_desktop_portable.zip` with bundled MinGW runtime DLLs).
 - [ ] Auto-update check against GitHub releases.
