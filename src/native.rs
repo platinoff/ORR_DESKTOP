@@ -2,15 +2,20 @@
 //! software encoder and MP4 muxer with no external process involved. Used by
 //! both the tray app (spawned on a worker thread) and the CLI (blocking).
 
+use crate::audio::{
+    AudioSource, AudioStream, init_capture, list_input_devices, list_output_devices,
+};
 use crate::capture::wgcap::{enumerate_monitors, native_source};
 use crate::encode::sw::SwH264Encoder;
 use crate::mux::mp4::Mp4Muxer;
-use crate::pipeline::{Frame, FrameSpec, FrameSource, PipelineStats, TrackInfo, VideoEncoder, Muxer};
+use crate::pipeline::{
+    Frame, FrameSource, FrameSpec, Muxer, PipelineStats, TrackInfo, VideoEncoder,
+};
 use crate::recorder::{Quality, Rect};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Round a rect down to even width/height — I420 chroma subsampling needs
 /// whole 2x2 blocks.
@@ -96,6 +101,7 @@ pub fn run_blocking(
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     max_frames: Option<u32>,
+    audio_source: AudioSource,
 ) -> Result<(PipelineStats, PathBuf)> {
     let rect = even_rect(params.rect);
     anyhow::ensure!(rect.w > 0 && rect.h > 0, "empty capture region");
@@ -123,6 +129,14 @@ pub fn run_blocking(
     encoder.init(&spec)?;
     muxer.open(&TrackInfo::from(spec))?;
 
+    // Initialize audio capture
+    let audio_stream = init_capture(audio_source, spec.fps).ok();
+    let mut audio = audio_stream.map(|mut s| {
+        // Start the stream
+        s.play();
+        s
+    });
+
     let mut stats = PipelineStats::default();
 
     loop {
@@ -131,6 +145,10 @@ pub fn run_blocking(
             std::thread::sleep(std::time::Duration::from_millis(100));
             continue;
         }
+
+        // Read available audio samples - in a full impl, we'd drain the cpal buffer
+        // For now, just keep the stream running
+        let _ = audio.as_mut().map(|s| s.read());
 
         match source.next_frame() {
             Some(frame) => {
@@ -157,6 +175,7 @@ pub fn run_blocking(
 pub struct NativeSessionHandle {
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    audio: Option<AudioStream>,
 }
 
 impl NativeSessionHandle {
@@ -165,6 +184,7 @@ impl NativeSessionHandle {
         NativeSessionHandle {
             stop: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(false)),
+            audio: None,
         }
     }
 
@@ -192,16 +212,17 @@ pub fn spawn_session(
     params: SessionParams,
     out_path: PathBuf,
     on_done: impl FnOnce(Result<PathBuf, String>) + Send + 'static,
+    audio_source: AudioSource,
 ) -> Result<NativeSessionHandle> {
     let handle = NativeSessionHandle::new();
-    let _stop = Arc::clone(&handle.stop);
-    let _paused = Arc::clone(&handle.paused);
+    let stop = Arc::clone(&handle.stop);
+    let paused = Arc::clone(&handle.paused);
     let stop2 = Arc::clone(&handle.stop);
     let paused2 = Arc::clone(&handle.paused);
     std::thread::Builder::new()
         .name("orr-native-rec".into())
         .spawn(move || {
-            let result = run_blocking(&params, out_path, stop2, paused2, None);
+            let result = run_blocking(&params, out_path, stop2, paused2, None, audio_source);
             on_done(result.map(|(_, path)| path).map_err(|e| format!("{e:#}")));
         })
         .context("cannot spawn recorder thread")?;
@@ -302,9 +323,15 @@ mod tests {
         };
         let out = std::env::temp_dir().join(format!("orr_native_e2e_{}.mp4", std::process::id()));
         let stop = Arc::new(AtomicBool::new(false));
-        let (stats, written) =
-            run_blocking(&params, out.clone(), Arc::clone(&stop), Arc::new(AtomicBool::new(false)), Some(9))
-                .expect("e2e run");
+        let (stats, written) = run_blocking(
+            &params,
+            out.clone(),
+            Arc::clone(&stop),
+            Arc::new(AtomicBool::new(false)),
+            Some(9),
+            AudioSource::Microphone,
+        )
+        .expect("e2e run");
         assert_eq!(stats.frames_encoded, 9);
         assert!(written.exists());
         assert!(written.metadata().expect("meta").len() > 512);
@@ -333,9 +360,14 @@ mod tests {
         };
         let out = std::env::temp_dir().join(format!("orr_spawn_e2e_{}.mp4", std::process::id()));
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = spawn_session(params, out.clone(), move |res| {
-            let _ = tx.send(res);
-        })
+        let handle = spawn_session(
+            params,
+            out.clone(),
+            move |res| {
+                let _ = tx.send(res);
+            },
+            AudioSource::Microphone,
+        )
         .expect("spawn");
         std::thread::sleep(std::time::Duration::from_millis(150));
         handle.stop();
