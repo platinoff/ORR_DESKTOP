@@ -85,13 +85,14 @@ pub fn bgra_to_i420(bgra: &[u8], width: u32, height: u32, out: &mut I420Frame) {
     let v = &mut out.v;
 
     // Per-pixel luma first (row by row, dropping odd tail column).
+    // Pre-compute BGRA row pointer for efficiency.
     for row in 0..h {
-        let src = &bgra[row * width as usize * 4..][..w * 4];
-        let dst = &mut y[row * w..][..w];
-        for (x, dst) in dst.iter_mut().enumerate() {
-            let b = src[x * 4] as i32;
-            let g = src[x * 4 + 1] as i32;
-            let r = src[x * 4 + 2] as i32;
+        let src_row = &bgra[row * width as usize * 4..][..w * 4];
+        let dst_row = &mut y[row * w..][..w];
+        for (x, dst) in dst_row.iter_mut().enumerate() {
+            let b = src_row[x * 4] as i32;
+            let g = src_row[x * 4 + 1] as i32;
+            let r = src_row[x * 4 + 2] as i32;
             *dst = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
         }
     }
