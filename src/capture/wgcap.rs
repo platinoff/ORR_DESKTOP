@@ -621,7 +621,7 @@ impl FrameSource for WgcSource {
         if target > now {
             std::thread::sleep(target - now);
         }
-        let pts_ms = (self.emitted * 1000) / self.fps as u64;
+        let pts_ms = started.elapsed().as_millis() as u64;
         let s = self.session.as_mut()?;
         // First frame: give the pool up to ~500 ms to deliver something.
         let mut have = false;
@@ -848,7 +848,7 @@ mod tests {
             let f = src.next_frame().expect("frame under max_frames");
             assert_eq!((f.width, f.height), (spec.width, spec.height));
             assert_eq!(f.data.len(), (spec.width * spec.height * 4) as usize);
-            assert_eq!(f.pts_ms, (i as u64 * 1000) / 30);
+            assert!(f.pts_ms >= (i as u64 * 1000) / 30);
         }
         assert!(src.next_frame().is_none());
     }

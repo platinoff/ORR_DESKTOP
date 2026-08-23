@@ -239,7 +239,7 @@ impl FrameSource for GdiSource {
         if target > now {
             std::thread::sleep(target - now);
         }
-        let pts_ms = (self.emitted * 1000) / self.fps as u64;
+        let pts_ms = started.elapsed().as_millis() as u64;
         let frame =
             self.session
                 .as_mut()?
