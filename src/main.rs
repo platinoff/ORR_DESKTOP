@@ -9,12 +9,11 @@ mod settings;
 
 use anyhow::Result;
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use recorder::{Capabilities, Encoder, Mode, Quality, Rect};
+use recorder::{Encoder, Mode, Quality, Rect};
 use selector::Outcome;
 use settings::Settings;
 use std::path::PathBuf;
-use std::process::ChildStdin;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use winit::application::ApplicationHandler;
@@ -30,42 +29,12 @@ enum UserEvent {
     Menu(String),
 }
 
-/// One active recording: either the legacy ffmpeg child process or a P4+
-/// native in-process pipeline worker.
-enum RunningSession {
-    Legacy {
-        stdin: ChildStdin,
-        started: Instant,
-        path: PathBuf,
-    },
-    Native {
-        handle: native::NativeSessionHandle,
-        started: Instant,
-        path: PathBuf,
-    },
-}
-
-impl RunningSession {
-    fn started(&self) -> Instant {
-        match self {
-            RunningSession::Legacy { started, .. } => *started,
-            RunningSession::Native { started, .. } => *started,
-        }
-    }
-
-    fn path(&self) -> &PathBuf {
-        match self {
-            RunningSession::Legacy { path, .. } => path,
-            RunningSession::Native { path, .. } => path,
-        }
-    }
-}
-
-fn legacy_mode() -> bool {
-    matches!(
-        std::env::var("ORR_LEGACY").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
-    )
+/// One active recording through the native in-process pipeline
+/// (WGC/GDI capture -> OpenH264 -> MP4 muxing, zero child processes).
+struct RunningSession {
+    handle: native::NativeSessionHandle,
+    started: Instant,
+    path: PathBuf,
 }
 
 struct Menus {
@@ -73,6 +42,8 @@ struct Menus {
     record_full: MenuItem,
     record_area: MenuItem,
     stop: MenuItem,
+    pause: MenuItem,
+    resume: MenuItem,
     quality: Vec<CheckMenuItem>,
     fps: Vec<CheckMenuItem>,
     encoder: Vec<CheckMenuItem>,
@@ -82,8 +53,6 @@ struct Menus {
 
 struct App {
     proxy: EventLoopProxy<UserEvent>,
-    ffmpeg: String,
-    caps: Capabilities,
     cfg_path: PathBuf,
     settings: Settings,
     tray: Option<TrayIcon>,
@@ -92,6 +61,7 @@ struct App {
     selecting: bool,
     exiting: bool,
     exit_pending: bool,
+    paused: bool,
 }
 
 fn main() -> Result<()> {
@@ -116,11 +86,11 @@ fn main() -> Result<()> {
             println!("                                  record a fixed region");
             println!("  orr_desktop --version           print version");
             println!();
-            println!("Recording uses the native pipeline (WGC/GDI capture + OpenH264 + MP4 muxing");
+            println!("Recording uses the native in-process pipeline (WGC/GDI capture + OpenH264 +");
             println!(
-                "in-process). Environment: ORR_LEGACY=1 falls back to the ffmpeg child-process"
+                "MP4 muxing) - no ffmpeg required. `probe` still reports legacy ffmpeg"
             );
-            println!("path; ORR_FFMPEG overrides the legacy ffmpeg binary.");
+            println!("encoders when ORR_FFMPEG is set (diagnostics only).");
             Ok(())
         }
         Some("probe") => {
@@ -149,15 +119,11 @@ fn gui() -> Result<()> {
         let _ = menu_proxy.send_event(UserEvent::Menu(e.id.0));
     }));
 
-    let ffmpeg = std::env::var("ORR_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
-    let caps = recorder::detect(&ffmpeg);
     let cfg_path = Settings::config_path();
     let app_settings = Settings::load(&cfg_path).sanitized();
 
     let mut app = App {
         proxy,
-        ffmpeg,
-        caps,
         cfg_path,
         settings: app_settings,
         tray: None,
@@ -166,6 +132,7 @@ fn gui() -> Result<()> {
         selecting: false,
         exiting: false,
         exit_pending: false,
+        paused: false,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -243,11 +210,8 @@ impl App {
             return;
         }
         let path = recorder::output_file(&self.settings.output_dir);
-        if !legacy_mode() {
-            self.begin_native(mode, path);
-        } else {
-            self.begin_legacy(mode, path);
-        }
+        // Native in-process pipeline (P5: zero external executables).
+        self.begin_native(mode, path);
     }
 
     fn begin_native(&mut self, mode: Mode, path: PathBuf) {
@@ -268,12 +232,12 @@ impl App {
             quality: self.settings.quality,
         };
         let proxy = self.proxy.clone();
-        match native::spawn_session(params, path.clone(), move |res| {
+match native::spawn_session(params, path.clone(), move |res| {
             let _ = proxy.send_event(UserEvent::Finished(res));
         }) {
             Ok(handle) => {
                 self.set_tooltip("ORR starting...");
-                self.session = Some(RunningSession::Native {
+                self.session = Some(RunningSession {
                     handle,
                     started: Instant::now(),
                     path,
@@ -284,114 +248,10 @@ impl App {
         }
     }
 
-    fn begin_legacy(&mut self, mode: Mode, path: PathBuf) {
-        if self.caps.encoders.is_empty() {
-            self.fatal("no usable h264 encoder found - is ffmpeg installed and on PATH?");
-            return;
-        }
-        let encoder = match recorder::resolve_encoder(self.settings.encoder, &self.caps) {
-            Some(e) => e,
-            None => match recorder::resolve_encoder(Encoder::Auto, &self.caps) {
-                Some(e) => e,
-                None => {
-                    self.fatal("selected encoder unavailable");
-                    return;
-                }
-            },
-        };
-        let cmd = match capture::ffspawn::build_command(
-            &self.ffmpeg,
-            &self.settings,
-            &self.caps,
-            mode,
-            encoder,
-            &path,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                self.fatal(&format!("cannot build ffmpeg command: {e}"));
-                return;
-            }
-        };
-        match capture::ffspawn::start(cmd) {
-            Ok(spawned) => {
-                self.set_tooltip("ORR starting...");
-                let monitor_path = path.clone();
-                self.spawn_monitor(spawned.child, monitor_path);
-                self.session = Some(RunningSession::Legacy {
-                    stdin: spawned.stdin,
-                    started: Instant::now(),
-                    path,
-                });
-                self.sync_menu();
-            }
-            Err(e) => self.fatal(&format!("cannot start ffmpeg: {e:#}")),
-        }
-    }
-
-    fn spawn_monitor(&self, mut child: std::process::Child, out_path: PathBuf) {
-        let proxy = self.proxy.clone();
-        std::thread::spawn(move || {
-            let stderr = child.stderr.take();
-            let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-            let tail2 = tail.clone();
-            let reader = std::thread::spawn(move || {
-                use std::io::Read;
-                if let Some(mut e) = stderr {
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match e.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                let mut t = tail2.lock().unwrap();
-                                t.push_str(&String::from_utf8_lossy(&buf[..n]));
-                                let len = t.len();
-                                if len > 4000 {
-                                    t.drain(..len - 4000);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-            let status = loop {
-                std::thread::sleep(Duration::from_secs(1));
-                match child.try_wait() {
-                    Ok(None) => {
-                        let _ = proxy.send_event(UserEvent::Tick);
-                    }
-                    Ok(Some(st)) => break st,
-                    Err(e) => {
-                        let _ = proxy.send_event(UserEvent::Finished(Err(format!(
-                            "ffmpeg wait failed: {e}"
-                        ))));
-                        let _ = reader.join();
-                        return;
-                    }
-                }
-            };
-            let _ = reader.join();
-            let tail_msg = tail.lock().unwrap().clone();
-            let result = if status.success() {
-                Ok(out_path)
-            } else {
-                Err(format!("ffmpeg exited with {status}\n{tail_msg}"))
-            };
-            let _ = proxy.send_event(UserEvent::Finished(result));
-        });
-    }
-
     fn stop(&mut self) {
-        match &mut self.session {
-            Some(RunningSession::Legacy { stdin, .. }) => {
-                capture::ffspawn::graceful_stop(stdin);
-                self.set_tooltip("ORR finalizing mp4...");
-            }
-            Some(RunningSession::Native { handle, .. }) => {
-                handle.stop();
-                self.set_tooltip("ORR finalizing mp4...");
-            }
-            None => {}
+        if let Some(RunningSession { handle, .. }) = &mut self.session {
+            handle.stop();
+            self.set_tooltip("ORR finalizing mp4...");
         }
     }
 
@@ -402,7 +262,7 @@ impl App {
 
     fn elapsed_string(&self) -> Option<String> {
         self.session.as_ref().map(|s| {
-            let el = s.started().elapsed().as_secs();
+            let el = s.started.elapsed().as_secs();
             format!(
                 "ORR REC {:02}:{:02}:{:02}",
                 el / 3600,
@@ -417,6 +277,20 @@ impl App {
             "rec_full" => self.start_full(),
             "rec_area" => self.start_area(),
             "rec_stop" => self.stop(),
+            "pause" => {
+                if let Some(s) = &self.session {
+                    s.handle.pause();
+                    self.paused = true;
+                    self.sync_menu();
+                }
+            }
+            "resume" => {
+                if let Some(s) = &self.session {
+                    s.handle.resume();
+                    self.paused = false;
+                    self.sync_menu();
+                }
+            }
             "open_dir" => self.open_folder(),
             "quit" => {
                 self.exiting = true;
@@ -511,7 +385,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let err = res.err();
                 if let Some(s) = self.session.take() {
                     match &err {
-                        None => println!("[orr] saved {}", s.path().display()),
+                        None => println!("[orr] saved {}", s.path.display()),
                         Some(e) => eprintln!("[orr] {e}"),
                     }
                 }
@@ -558,6 +432,18 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
     let stop = MenuItem::with_id(
         "rec_stop",
         "Stop Recording",
+        false,
+        None::<muda::accelerator::Accelerator>,
+    );
+    let pause = MenuItem::with_id(
+        "pause",
+        "Pause Recording",
+        true,
+        None::<muda::accelerator::Accelerator>,
+    );
+    let resume = MenuItem::with_id(
+        "resume",
+        "Resume Recording",
         false,
         None::<muda::accelerator::Accelerator>,
     );
@@ -643,6 +529,8 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
         &record_full,
         &record_area,
         &stop,
+        &pause,
+        &resume,
         &PredefinedMenuItem::separator(),
         &settings_sub,
         &open_dir,
@@ -655,6 +543,8 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
         record_full,
         record_area,
         stop,
+        pause,
+        resume,
         quality,
         fps: fps_items,
         encoder: encoders,
@@ -713,7 +603,7 @@ fn cli_native(seconds: u64, rect: Rect, out: PathBuf) -> Result<()> {
         std::thread::sleep(Duration::from_secs(seconds));
         stop2.store(true, std::sync::atomic::Ordering::Relaxed);
     });
-    let (stats, path) = native::run_blocking(&params, out, Arc::clone(&stop), None)?;
+    let (stats, path) = native::run_blocking(&params, out, Arc::clone(&stop), Arc::new(AtomicBool::new(false)), None)?;
     println!(
         "[cli] done: {} frames / {} encoded, {} bytes -> {}",
         stats.frames_source,
@@ -741,33 +631,8 @@ fn cli_area(args: &[String]) -> Result<()> {
         None => recorder::output_file(&std::env::current_dir()?),
     };
 
-    if !legacy_mode() {
-        println!("[cli] area {rect:?} for {seconds}s via native in-process pipeline");
-        return cli_native(seconds, rect, out);
-    }
-
-    let ffmpeg = std::env::var("ORR_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
-    let caps = recorder::detect(&ffmpeg);
-    let st = Settings::load(&Settings::config_path()).sanitized();
-    let encoder = recorder::resolve_encoder(st.encoder, &caps)
-        .or_else(|| recorder::resolve_encoder(Encoder::Auto, &caps))
-        .ok_or_else(|| anyhow::anyhow!("no h264 encoder available"))?;
-
-    let cmd =
-        capture::ffspawn::build_command(&ffmpeg, &st, &caps, Mode::Area(rect), encoder, &out)?;
-    let spawned = capture::ffspawn::start(cmd)?;
-    println!("[cli] area {rect:?} for {seconds}s via {}", encoder.label());
-    std::thread::sleep(Duration::from_secs(seconds));
-    let mut stdin = spawned.stdin;
-    let mut child = spawned.child;
-    capture::ffspawn::graceful_stop(&mut stdin);
-    drop(stdin);
-    let status = child.wait()?;
-    if !status.success() {
-        anyhow::bail!("ffmpeg failed with {status}");
-    }
-    println!("[cli] done, size={} bytes", std::fs::metadata(&out)?.len());
-    Ok(())
+    println!("[cli] area {rect:?} for {seconds}s via native in-process pipeline");
+    cli_native(seconds, rect, out)
 }
 
 fn cli_record(args: &[String]) -> Result<()> {
@@ -777,42 +642,7 @@ fn cli_record(args: &[String]) -> Result<()> {
         None => recorder::output_file(&std::env::current_dir()?),
     };
 
-    if !legacy_mode() {
-        println!("[cli] recording {seconds}s fullscreen via native in-process pipeline");
-        let desktop = native::full_desktop_rect()?;
-        return cli_native(seconds, desktop, out);
-    }
-
-    let ffmpeg = std::env::var("ORR_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
-    let caps = recorder::detect(&ffmpeg);
-    let st = Settings::load(&Settings::config_path()).sanitized();
-
-    let encoder = recorder::resolve_encoder(st.encoder, &caps)
-        .or_else(|| recorder::resolve_encoder(Encoder::Auto, &caps))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no h264 encoder available (install ffmpeg with nvenc/qsv/amf or libx264)"
-            )
-        })?;
-    recorder::validate_output_dir(out.parent().unwrap_or(std::path::Path::new(".")))?;
-
-    let cmd =
-        capture::ffspawn::build_command(&ffmpeg, &st, &caps, Mode::FullScreen, encoder, &out)?;
-    let spawned = capture::ffspawn::start(cmd)?;
-    println!(
-        "[cli] recording {seconds}s fullscreen via {} -> {}",
-        encoder.label(),
-        out.display()
-    );
-    std::thread::sleep(Duration::from_secs(seconds));
-    let mut stdin = spawned.stdin;
-    let mut child = spawned.child;
-    capture::ffspawn::graceful_stop(&mut stdin);
-    drop(stdin);
-    let status = child.wait()?;
-    if !status.success() {
-        anyhow::bail!("ffmpeg failed with {status}");
-    }
-    println!("[cli] done, size={} bytes", std::fs::metadata(&out)?.len());
-    Ok(())
+    println!("[cli] recording {seconds}s fullscreen via native in-process pipeline");
+    let desktop = native::full_desktop_rect()?;
+    cli_native(seconds, desktop, out)
 }

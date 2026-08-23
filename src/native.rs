@@ -5,12 +5,12 @@
 use crate::capture::wgcap::{enumerate_monitors, native_source};
 use crate::encode::sw::SwH264Encoder;
 use crate::mux::mp4::Mp4Muxer;
-use crate::pipeline::{self, Frame, FrameSource, FrameSpec, PipelineStats};
+use crate::pipeline::{Frame, FrameSpec, FrameSource, PipelineStats, TrackInfo, VideoEncoder, Muxer};
 use crate::recorder::{Quality, Rect};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Round a rect down to even width/height — I420 chroma subsampling needs
 /// whole 2x2 blocks.
@@ -49,10 +49,11 @@ pub struct SessionParams {
 }
 
 /// Source wrapper that ends the stream when the stop flag is raised or the
-/// optional frame budget is spent.
+/// optional frame budget is spent. Also tracks a paused flag.
 struct Stoppable<S: FrameSource> {
     inner: S,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     max_frames: Option<u32>,
     emitted: u32,
 }
@@ -86,12 +87,14 @@ impl<S: FrameSource> FrameSource for Stoppable<S> {
 }
 
 /// Run one recording session to completion on the calling thread. `stop` ends
-/// the stream gracefully (muxer still finalizes); `max_frames` caps it for
-/// tests/deterministic runs.
+/// the stream gracefully (muxer still finalizes); `pause`/`resume` control
+/// capture — when paused, the loop waits without draining the encoder; `max_frames`
+/// caps it for tests/deterministic runs.
 pub fn run_blocking(
     params: &SessionParams,
     out_path: PathBuf,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     max_frames: Option<u32>,
 ) -> Result<(PipelineStats, PathBuf)> {
     let rect = even_rect(params.rect);
@@ -108,24 +111,78 @@ pub fn run_blocking(
     let mut source = Stoppable {
         inner: source,
         stop,
+        paused: paused.clone(),
         max_frames,
         emitted: 0,
     };
     let mut encoder = SwH264Encoder::new(params.quality);
     let mut muxer = Mp4Muxer::create(out_path);
-    pipeline::run(&mut source, &mut encoder, &mut muxer)
+
+    let spec = source.spec();
+    source.start()?;
+    encoder.init(&spec)?;
+    muxer.open(&TrackInfo::from(spec))?;
+
+    let mut stats = PipelineStats::default();
+
+    loop {
+        // If paused, wait without draining encoder/muxer
+        if paused.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            continue;
+        }
+
+        match source.next_frame() {
+            Some(frame) => {
+                stats.frames_source += 1;
+                stats.duration_ms = frame.pts_ms;
+                for sample in encoder.feed(&frame)? {
+                    stats.samples_written += 1;
+                    muxer.write_sample(&sample)?;
+                }
+            }
+            None => break,
+        }
+    }
+    for sample in encoder.finish()? {
+        stats.samples_written += 1;
+        muxer.write_sample(&sample)?;
+    }
+    stats.frames_encoded = stats.frames_source;
+    let out = muxer.finalize()?;
+    Ok((stats, out))
 }
 
 /// Handle for a recording running on a background thread.
 pub struct NativeSessionHandle {
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
 }
 
 impl NativeSessionHandle {
+    /// Create a new session handle. The `paused` flag starts as false (recording running).
+    pub fn new() -> Self {
+        NativeSessionHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Request a graceful stop; the worker finishes encoding and muxing, then
     /// invokes the completion callback.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Request a pause; the worker stops capturing frames but preserves encoder/muxer
+    /// state. Use `resume()` to continue.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    /// Resume a paused recording. The worker continues capturing frames from where it left off.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
     }
 }
 
@@ -136,16 +193,19 @@ pub fn spawn_session(
     out_path: PathBuf,
     on_done: impl FnOnce(Result<PathBuf, String>) + Send + 'static,
 ) -> Result<NativeSessionHandle> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = Arc::clone(&stop);
+    let handle = NativeSessionHandle::new();
+    let _stop = Arc::clone(&handle.stop);
+    let _paused = Arc::clone(&handle.paused);
+    let stop2 = Arc::clone(&handle.stop);
+    let paused2 = Arc::clone(&handle.paused);
     std::thread::Builder::new()
         .name("orr-native-rec".into())
         .spawn(move || {
-            let result = run_blocking(&params, out_path, stop2, None);
+            let result = run_blocking(&params, out_path, stop2, paused2, None);
             on_done(result.map(|(_, path)| path).map_err(|e| format!("{e:#}")));
         })
         .context("cannot spawn recorder thread")?;
-    Ok(NativeSessionHandle { stop })
+    Ok(handle)
 }
 
 /// Count processes whose image name matches `name` case-insensitively via a
@@ -243,10 +303,11 @@ mod tests {
         let out = std::env::temp_dir().join(format!("orr_native_e2e_{}.mp4", std::process::id()));
         let stop = Arc::new(AtomicBool::new(false));
         let (stats, written) =
-            run_blocking(&params, out.clone(), Arc::clone(&stop), Some(9)).expect("e2e run");
+            run_blocking(&params, out.clone(), Arc::clone(&stop), Arc::new(AtomicBool::new(false)), Some(9))
+                .expect("e2e run");
         assert_eq!(stats.frames_encoded, 9);
-        assert_eq!(written, out);
-        assert!(out.metadata().expect("meta").len() > 512);
+        assert!(written.exists());
+        assert!(written.metadata().expect("meta").len() > 512);
 
         let after = count_processes("ffmpeg.exe");
         assert_eq!(

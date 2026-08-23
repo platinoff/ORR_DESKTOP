@@ -1,7 +1,13 @@
-use anyhow::{Context, Result, anyhow, bail};
+//! Hardware discovery / diagnostics for the LEGACY reporting path only
+//! (`orr_desktop probe`). Since P5 the record path never spawns a process:
+//! recording runs through the native in-process pipeline (`src/native.rs`).
+//! Everything here shells out to ffmpeg purely to *report* which hardware
+//! encoders a machine offers until P6 wires vendor APIs in-process.
+
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Encoder {
@@ -63,14 +69,6 @@ impl Quality {
             Quality::High => 50,
             Quality::Medium => 30,
             Quality::Low => 15,
-        }
-    }
-    pub fn x264_preset(self) -> &'static str {
-        match self {
-            Quality::Ultra => "slow",
-            Quality::High => "medium",
-            Quality::Medium => "veryfast",
-            Quality::Low => "ultrafast",
         }
     }
 }
@@ -151,6 +149,8 @@ fn encoder_usable(ffmpeg: &str, e: Encoder) -> bool {
         .unwrap_or(false)
 }
 
+/// Probe ffmpeg for available H.264 encoders (diagnostics only). Degrades to
+/// empty capabilities when ffmpeg is absent — the record path does not care.
 pub fn detect(ffmpeg: &str) -> Capabilities {
     let mut caps = Capabilities::default();
     let enc_out = Command::new(ffmpeg)
@@ -179,217 +179,6 @@ pub fn detect(ffmpeg: &str) -> Capabilities {
     caps.encoders.retain(|e| encoder_usable(ffmpeg, *e));
     caps.ddagrab = run_capture(ffmpeg, &["-hide_banner", "-filters"], "ddagrab");
     caps
-}
-
-pub fn resolve_encoder(pref: Encoder, caps: &Capabilities) -> Option<Encoder> {
-    match pref {
-        Encoder::Auto => caps.encoders.first().copied(),
-        e => caps.encoders.iter().find(|c| **c == e).copied(),
-    }
-}
-
-struct CommonArgs {
-    fps: u32,
-    mouse: bool,
-    quality: Quality,
-    perf: bool,
-    threads: u32,
-}
-
-fn push_all(args: &mut Vec<String>, items: &[&str]) {
-    args.extend(items.iter().map(|s| s.to_string()));
-}
-
-fn nvenc_args(a: &CommonArgs, out: &mut Vec<String>) {
-    out.push("-c:v".into());
-    out.push("h264_nvenc".into());
-    if a.perf {
-        push_all(
-            out,
-            &["-preset", "p1", "-tune", "ll", "-rc", "cbr", "-delay", "0"],
-        );
-        let mb = a.quality.bitrate_mbps().max(60);
-        out.push("-b:v".into());
-        out.push(format!("{mb}M"));
-        out.push("-bufsize".into());
-        out.push(format!("{}M", mb * 2));
-    } else {
-        push_all(out, &["-preset", "p5", "-tune", "hq", "-rc", "vbr"]);
-        out.push("-cq".into());
-        out.push(a.quality.cq().to_string());
-        push_all(out, &["-b:v", "0"]);
-        out.push("-maxrate".into());
-        out.push(format!("{}M", a.quality.bitrate_mbps()));
-        out.push("-bufsize".into());
-        out.push(format!("{}M", a.quality.bitrate_mbps() * 2));
-    }
-    push_all(out, &["-profile:v", "high"]);
-}
-
-fn qsv_args(a: &CommonArgs, out: &mut Vec<String>) {
-    out.push("-c:v".into());
-    out.push("h264_qsv".into());
-    if a.perf {
-        push_all(out, &["-preset", "veryfast"]);
-        out.push("-b:v".into());
-        out.push(format!("{}M", a.quality.bitrate_mbps()));
-    } else {
-        push_all(out, &["-preset", "medium", "-global_quality"]);
-        out.push(a.quality.cq().to_string());
-    }
-}
-
-fn amf_args(a: &CommonArgs, out: &mut Vec<String>) {
-    out.push("-c:v".into());
-    out.push("h264_amf".into());
-    if a.perf {
-        push_all(out, &["-quality", "speed", "-rc", "cbr"]);
-    } else {
-        push_all(out, &["-quality", "balanced", "-rc", "vbr_peak"]);
-    }
-    out.push("-b:v".into());
-    out.push(format!("{}M", a.quality.bitrate_mbps()));
-}
-
-fn x264_args(a: &CommonArgs, out: &mut Vec<String>) {
-    out.push("-c:v".into());
-    out.push("libx264".into());
-    if a.perf {
-        out.push("-preset".into());
-        out.push("ultrafast".into());
-    } else {
-        out.push("-preset".into());
-        out.push(a.quality.x264_preset().into());
-    }
-    out.push("-crf".into());
-    out.push(a.quality.cq().to_string());
-    if a.threads > 0 {
-        out.push("-threads".into());
-        out.push(a.threads.to_string());
-    }
-    out.push("-pix_fmt".into());
-    out.push("yuv420p".into());
-}
-
-/// Pure argv builder for the legacy ffmpeg path (no process is spawned).
-pub(crate) fn build_args(
-    settings: &crate::settings::Settings,
-    caps: &Capabilities,
-    mode: Mode,
-    encoder: Encoder,
-    out_path: &std::path::Path,
-) -> Vec<String> {
-    let common = CommonArgs {
-        fps: settings.fps,
-        mouse: settings.capture_mouse,
-        quality: settings.quality,
-        perf: settings.performance_mode,
-        threads: settings.cpu_threads,
-    };
-    let mut args: Vec<String> = vec![
-        "-y".into(),
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "warning".into(),
-    ];
-
-    let full_gpu = mode == Mode::FullScreen && encoder == Encoder::Nvenc && caps.ddagrab;
-
-    if full_gpu {
-        args.push("-filter_complex".into());
-        args.push(format!(
-            "ddagrab=output_idx=0:framerate={}:draw_mouse={}",
-            common.fps,
-            if common.mouse { 1 } else { 0 }
-        ));
-        nvenc_args(&common, &mut args);
-    } else {
-        push_all(&mut args, &["-f", "gdigrab"]);
-        args.push("-framerate".into());
-        args.push(common.fps.to_string());
-        args.push("-draw_mouse".into());
-        args.push(if common.mouse { "1" } else { "0" }.into());
-        if let Mode::Area(r) = mode {
-            args.push("-offset_x".into());
-            args.push(r.x.to_string());
-            args.push("-offset_y".into());
-            args.push(r.y.to_string());
-            args.push("-video_size".into());
-            args.push(format!("{}x{}", r.w, r.h));
-        }
-        args.push("-i".into());
-        args.push("desktop".into());
-        match encoder {
-            Encoder::Nvenc => nvenc_args(&common, &mut args),
-            Encoder::Qsv => qsv_args(&common, &mut args),
-            Encoder::Amf => amf_args(&common, &mut args),
-            _ => x264_args(&common, &mut args),
-        }
-        if encoder != Encoder::X264 {
-            args.push("-pix_fmt".into());
-            args.push("yuv420p".into());
-        }
-    }
-
-    args.push("-movflags".into());
-    args.push("+faststart".into());
-    args.push(out_path.to_string_lossy().to_string());
-    args
-}
-
-pub fn build_command(
-    ffmpeg: &str,
-    settings: &crate::settings::Settings,
-    caps: &Capabilities,
-    mode: Mode,
-    encoder: Encoder,
-    out_path: &std::path::Path,
-) -> Result<Command> {
-    let args = build_args(settings, caps, mode, encoder, out_path);
-    let mut cmd = Command::new(ffmpeg);
-    cmd.args(&args)
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdout(Stdio::null());
-    if std::env::var_os("ORR_PRINT_CMD").is_some() {
-        eprintln!("[orr] ffmpeg {}", shell_words_join(&args));
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    Ok(cmd)
-}
-
-fn shell_words_join(args: &[String]) -> String {
-    args.iter()
-        .map(|a| {
-            if a.contains(' ') {
-                format!("\"{a}\"")
-            } else {
-                a.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-pub struct Spawned {
-    pub child: Child,
-    pub stdin: ChildStdin,
-}
-
-pub fn start(mut cmd: Command) -> Result<Spawned> {
-    let mut child = cmd.spawn().context("failed to launch ffmpeg")?;
-    let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
-    Ok(Spawned { child, stdin })
-}
-
-pub fn graceful_stop(stdin: &mut ChildStdin) {
-    use std::io::Write;
-    let _ = stdin.write_all(b"q");
-    let _ = stdin.flush();
 }
 
 pub fn output_file(dir: &std::path::Path) -> PathBuf {
@@ -436,72 +225,22 @@ pub fn validate_output_dir(dir: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Settings;
 
-    fn test_settings() -> Settings {
-        Settings::default()
-    }
-
-    fn pos(path: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(path)
+    #[test]
+    fn detect_degrades_gracefully_without_ffmpeg() {
+        // P5 acceptance: recording must work on machines where this returns
+        // empty capabilities — the native pipeline never consults ffmpeg.
+        let caps = detect("Z:/definitely-not-installed/ffmpeg.exe");
+        assert!(caps.encoders.is_empty());
+        assert!(!caps.ddagrab);
     }
 
     #[test]
-    fn area_args_use_gdigrab_offsets() {
-        let s = test_settings();
-        let caps = Capabilities::default();
-        let args = build_args(
-            &s,
-            &caps,
-            Mode::Area(Rect {
-                x: 100,
-                y: 50,
-                w: 960,
-                h: 720,
-            }),
-            Encoder::X264,
-            &pos("out.mp4"),
-        );
-        let has = |v: &str| args.iter().any(|a| a == v);
-        assert!(has("-f"));
-        assert!(args.contains(&"gdigrab".to_string()));
-        let idx = args.iter().position(|a| a == "-offset_x").unwrap();
-        assert_eq!(args[idx + 1], "100");
-        let idx = args.iter().position(|a| a == "-offset_y").unwrap();
-        assert_eq!(args[idx + 1], "50");
-        let idx = args.iter().position(|a| a == "-video_size").unwrap();
-        assert_eq!(args[idx + 1], "960x720");
-        assert_eq!(args.last().unwrap(), "out.mp4");
-        // x264 keeps its own pix_fmt; no extra global pix_fmt push
-        assert_eq!(args.iter().filter(|a| a.as_str() == "-pix_fmt").count(), 1);
-    }
-
-    #[test]
-    fn fullscreen_nvenc_with_ddagrab_uses_filter_complex() {
-        let s = test_settings();
-        let caps = Capabilities {
-            ddagrab: true,
-            ..Default::default()
-        };
-        let args = build_args(&s, &caps, Mode::FullScreen, Encoder::Nvenc, &pos("gpu.mp4"));
-        assert!(args.contains(&"-filter_complex".to_string()));
-        assert!(
-            args.iter()
-                .any(|a| a.starts_with("ddagrab=output_idx=0:framerate="))
-        );
-        assert!(args.contains(&"h264_nvenc".to_string()));
-        assert!(!args.contains(&"desktop".to_string()));
-    }
-
-    #[test]
-    fn fullscreen_without_ddagrab_falls_back_to_gdigrab() {
-        let s = test_settings();
-        let caps = Capabilities::default(); // ddagrab: false
-        let args = build_args(&s, &caps, Mode::FullScreen, Encoder::Amf, &pos("amf.mp4"));
-        assert!(!args.contains(&"-filter_complex".to_string()));
-        assert!(args.contains(&"desktop".to_string()));
-        assert!(args.contains(&"h264_amf".to_string()));
-        assert!(args.contains(&"yuv420p".to_string())); // hw encoder pix_fmt
-        assert_eq!(args.last().unwrap(), "amf.mp4");
+    fn output_file_name_has_timestamp_shape() {
+        let p = output_file(std::path::Path::new("."));
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("ORR_"));
+        assert!(name.ends_with(".mp4"));
+        assert_eq!(name.len(), "ORR_YYYYMMDD_HHMMSS.mp4".len());
     }
 }

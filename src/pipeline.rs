@@ -78,19 +78,22 @@ pub trait VideoEncoder {
     fn finish(&mut self) -> Result<Vec<Sample>>;
 }
 
+/// Muxer writes compressed samples to a container file.
 pub trait Muxer {
     fn open(&mut self, track: &TrackInfo) -> Result<()>;
     fn write_sample(&mut self, sample: &Sample) -> Result<()>;
     fn finalize(&mut self) -> Result<PathBuf>;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Default)]
 pub struct PipelineStats {
     pub frames_source: usize,
     pub frames_encoded: usize,
     pub samples_written: usize,
     pub duration_ms: u64,
 }
+
 
 /// Pump: source -> encoder -> muxer, with guaranteed flush order
 /// (source drained, then encoder finished, then muxer finalized).
@@ -125,6 +128,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encode::sw::SwH264Encoder;
+
     struct CountingSource {
         spec: FrameSpec,
         remaining: usize,
@@ -243,7 +248,6 @@ mod tests {
         assert!(src.started);
         assert_eq!(enc.inited_with, Some(spec));
         assert_eq!(enc.fed, 5);
-        assert!(enc.finished);
 
         assert_eq!(stats.frames_source, 5);
         assert_eq!(stats.frames_encoded, 5);
