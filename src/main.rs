@@ -50,6 +50,7 @@ struct Menus {
     encoder: Vec<CheckMenuItem>,
     perf: CheckMenuItem,
     mouse: CheckMenuItem,
+    choose_dir: MenuItem,
 }
 
 struct App {
@@ -319,6 +320,13 @@ impl App {
                 self.save_settings();
                 self.sync_menu();
             }
+            "choose_dir" => {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    self.settings.output_dir = folder;
+                    self.save_settings();
+                    self.set_tooltip(&format!("Output folder: {}", self.settings.output_dir.display()));
+                }
+            }
             other => {
                 let mut changed = false;
                 if let Some(i) = index_of(other, "q_") {
@@ -530,6 +538,12 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
         settings.capture_mouse,
         None::<muda::accelerator::Accelerator>,
     );
+    let choose_dir = MenuItem::with_id(
+        "choose_dir",
+        "Choose Output Folder...",
+        true,
+        None::<muda::accelerator::Accelerator>,
+    );
     let reset = MenuItem::with_id(
         "reset",
         "Reset Settings",
@@ -538,7 +552,7 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
     );
 
     let settings_sub = Submenu::with_id("settings_sub", "Settings", true);
-    settings_sub.append_items(&[&quality_sub, &fps_sub, &enc_sub, &perf, &mouse, &reset])?;
+    settings_sub.append_items(&[&quality_sub, &fps_sub, &enc_sub, &perf, &mouse, &choose_dir, &reset])?;
 
     menu.append_items(&[
         &record_full,
@@ -565,6 +579,7 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
         encoder: encoders,
         perf,
         mouse,
+        choose_dir,
     };
 
     let tray = TrayIconBuilder::new()
