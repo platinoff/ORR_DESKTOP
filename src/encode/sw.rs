@@ -173,6 +173,18 @@ impl SwH264Encoder {
             dur_ms: u64::from(1000 / self.fps.max(1)),
         })
     }
+
+    /// Pre-initialize encoder state for batch processing (reduces per-frame overhead).
+    #[allow(dead_code)]
+    fn pre_init(&mut self, spec: &FrameSpec) -> Result<()> {
+        // Re-initialize with new spec if dimensions changed
+        let w = spec.width as usize;
+        let h = spec.height as usize;
+        if self.enc.is_none() || self.i420.width != w || self.i420.height != h {
+            self.init(spec)?;
+        }
+        Ok(())
+    }
 }
 
 impl VideoEncoder for SwH264Encoder {
