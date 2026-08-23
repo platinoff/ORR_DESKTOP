@@ -271,14 +271,14 @@ fn x264_args(a: &CommonArgs, out: &mut Vec<String>) {
     out.push("yuv420p".into());
 }
 
-pub fn build_command(
-    ffmpeg: &str,
+/// Pure argv builder for the legacy ffmpeg path (no process is spawned).
+pub(crate) fn build_args(
     settings: &crate::settings::Settings,
     caps: &Capabilities,
     mode: Mode,
     encoder: Encoder,
     out_path: &std::path::Path,
-) -> Result<Command> {
+) -> Vec<String> {
     let common = CommonArgs {
         fps: settings.fps,
         mouse: settings.capture_mouse,
@@ -334,7 +334,18 @@ pub fn build_command(
     args.push("-movflags".into());
     args.push("+faststart".into());
     args.push(out_path.to_string_lossy().to_string());
+    args
+}
 
+pub fn build_command(
+    ffmpeg: &str,
+    settings: &crate::settings::Settings,
+    caps: &Capabilities,
+    mode: Mode,
+    encoder: Encoder,
+    out_path: &std::path::Path,
+) -> Result<Command> {
+    let args = build_args(settings, caps, mode, encoder, out_path);
     let mut cmd = Command::new(ffmpeg);
     cmd.args(&args)
         .stdin(Stdio::piped())
@@ -420,4 +431,77 @@ pub fn validate_output_dir(dir: &std::path::Path) -> Result<()> {
         bail!("{:?} is not a directory", dir);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    fn test_settings() -> Settings {
+        Settings::default()
+    }
+
+    fn pos(path: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(path)
+    }
+
+    #[test]
+    fn area_args_use_gdigrab_offsets() {
+        let s = test_settings();
+        let caps = Capabilities::default();
+        let args = build_args(
+            &s,
+            &caps,
+            Mode::Area(Rect {
+                x: 100,
+                y: 50,
+                w: 960,
+                h: 720,
+            }),
+            Encoder::X264,
+            &pos("out.mp4"),
+        );
+        let has = |v: &str| args.iter().any(|a| a == v);
+        assert!(has("-f"));
+        assert!(args.contains(&"gdigrab".to_string()));
+        let idx = args.iter().position(|a| a == "-offset_x").unwrap();
+        assert_eq!(args[idx + 1], "100");
+        let idx = args.iter().position(|a| a == "-offset_y").unwrap();
+        assert_eq!(args[idx + 1], "50");
+        let idx = args.iter().position(|a| a == "-video_size").unwrap();
+        assert_eq!(args[idx + 1], "960x720");
+        assert_eq!(args.last().unwrap(), "out.mp4");
+        // x264 keeps its own pix_fmt; no extra global pix_fmt push
+        assert_eq!(args.iter().filter(|a| a.as_str() == "-pix_fmt").count(), 1);
+    }
+
+    #[test]
+    fn fullscreen_nvenc_with_ddagrab_uses_filter_complex() {
+        let s = test_settings();
+        let caps = Capabilities {
+            ddagrab: true,
+            ..Default::default()
+        };
+        let args = build_args(&s, &caps, Mode::FullScreen, Encoder::Nvenc, &pos("gpu.mp4"));
+        assert!(args.contains(&"-filter_complex".to_string()));
+        assert!(
+            args.iter()
+                .any(|a| a.starts_with("ddagrab=output_idx=0:framerate="))
+        );
+        assert!(args.contains(&"h264_nvenc".to_string()));
+        assert!(!args.contains(&"desktop".to_string()));
+    }
+
+    #[test]
+    fn fullscreen_without_ddagrab_falls_back_to_gdigrab() {
+        let s = test_settings();
+        let caps = Capabilities::default(); // ddagrab: false
+        let args = build_args(&s, &caps, Mode::FullScreen, Encoder::Amf, &pos("amf.mp4"));
+        assert!(!args.contains(&"-filter_complex".to_string()));
+        assert!(args.contains(&"desktop".to_string()));
+        assert!(args.contains(&"h264_amf".to_string()));
+        assert!(args.contains(&"yuv420p".to_string())); // hw encoder pix_fmt
+        assert_eq!(args.last().unwrap(), "amf.mp4");
+    }
 }

@@ -1,3 +1,7 @@
+mod capture;
+mod encode;
+mod mux;
+mod pipeline;
 mod recorder;
 mod selector;
 mod settings;
@@ -211,7 +215,7 @@ impl App {
             return;
         }
         let path = recorder::output_file(&self.settings.output_dir);
-        let cmd = match recorder::build_command(
+        let cmd = match capture::ffspawn::build_command(
             &self.ffmpeg,
             &self.settings,
             &self.caps,
@@ -225,7 +229,7 @@ impl App {
                 return;
             }
         };
-        match recorder::start(cmd) {
+        match capture::ffspawn::start(cmd) {
             Ok(spawned) => {
                 self.set_tooltip("ORR starting...");
                 let monitor_path = path.clone();
@@ -295,7 +299,7 @@ impl App {
 
     fn stop(&mut self) {
         if let Some(s) = &mut self.session {
-            recorder::graceful_stop(&mut s.stdin);
+            capture::ffspawn::graceful_stop(&mut s.stdin);
             self.set_tooltip("ORR finalizing mp4...");
         }
     }
@@ -626,13 +630,14 @@ fn cli_area(args: &[String]) -> Result<()> {
         .or_else(|| recorder::resolve_encoder(Encoder::Auto, &caps))
         .ok_or_else(|| anyhow::anyhow!("no h264 encoder available"))?;
 
-    let cmd = recorder::build_command(&ffmpeg, &st, &caps, Mode::Area(rect), encoder, &out)?;
-    let spawned = recorder::start(cmd)?;
+    let cmd =
+        capture::ffspawn::build_command(&ffmpeg, &st, &caps, Mode::Area(rect), encoder, &out)?;
+    let spawned = capture::ffspawn::start(cmd)?;
     println!("[cli] area {rect:?} for {seconds}s via {}", encoder.label());
     std::thread::sleep(Duration::from_secs(seconds));
     let mut stdin = spawned.stdin;
     let mut child = spawned.child;
-    recorder::graceful_stop(&mut stdin);
+    capture::ffspawn::graceful_stop(&mut stdin);
     drop(stdin);
     let status = child.wait()?;
     if !status.success() {
@@ -662,8 +667,9 @@ fn cli_record(args: &[String]) -> Result<()> {
         })?;
     recorder::validate_output_dir(out.parent().unwrap_or(std::path::Path::new(".")))?;
 
-    let cmd = recorder::build_command(&ffmpeg, &st, &caps, Mode::FullScreen, encoder, &out)?;
-    let spawned = recorder::start(cmd)?;
+    let cmd =
+        capture::ffspawn::build_command(&ffmpeg, &st, &caps, Mode::FullScreen, encoder, &out)?;
+    let spawned = capture::ffspawn::start(cmd)?;
     println!(
         "[cli] recording {seconds}s fullscreen via {} -> {}",
         encoder.label(),
@@ -672,7 +678,7 @@ fn cli_record(args: &[String]) -> Result<()> {
     std::thread::sleep(Duration::from_secs(seconds));
     let mut stdin = spawned.stdin;
     let mut child = spawned.child;
-    recorder::graceful_stop(&mut stdin);
+    capture::ffspawn::graceful_stop(&mut stdin);
     drop(stdin);
     let status = child.wait()?;
     if !status.success() {
