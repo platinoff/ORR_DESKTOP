@@ -305,8 +305,12 @@ impl App {
                     self.exit_pending = true;
                 }
             }
-            "perf" => {
+"perf" => {
                 self.settings.performance_mode = !self.settings.performance_mode;
+                self.save_settings();
+            }
+            "reset" => {
+                self.settings = Settings::default();
                 self.save_settings();
                 self.sync_menu();
             }
@@ -526,9 +530,15 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
         settings.capture_mouse,
         None::<muda::accelerator::Accelerator>,
     );
+    let reset = MenuItem::with_id(
+        "reset",
+        "Reset Settings",
+        true,
+        None::<muda::accelerator::Accelerator>,
+    );
 
     let settings_sub = Submenu::with_id("settings_sub", "Settings", true);
-    settings_sub.append_items(&[&quality_sub, &fps_sub, &enc_sub, &perf, &mouse])?;
+    settings_sub.append_items(&[&quality_sub, &fps_sub, &enc_sub, &perf, &mouse, &reset])?;
 
     menu.append_items(&[
         &record_full,
