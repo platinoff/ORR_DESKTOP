@@ -385,4 +385,38 @@ mod tests {
         assert!(out.exists());
         std::fs::remove_file(&out).ok();
     }
+
+    #[test]
+    fn test_recording_duration_and_stats() {
+        let spec_rect = full_desktop_rect().unwrap();
+        let params = SessionParams {
+            rect: Rect {
+                x: spec_rect.x,
+                y: spec_rect.y,
+                w: spec_rect.w.min(128),
+                h: spec_rect.h.min(96),
+            },
+            fps: 30,
+            cursor: false,
+            quality: Quality::Low,
+        };
+        let out = std::env::temp_dir().join(format!("orr_stats_test_{}.mp4", std::process::id()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (stats, written) = run_blocking(
+            &params,
+            out.clone(),
+            stop,
+            Arc::new(AtomicBool::new(false)),
+            Some(15),
+            AudioSource::Microphone,
+        )
+        .expect("run_blocking stats test");
+
+        assert_eq!(stats.frames_source, 15);
+        assert_eq!(stats.frames_encoded, 15);
+        assert!(stats.samples_written > 0);
+        assert!(stats.duration_ms >= (15 * 1000) / 30);
+        assert!(written.exists());
+        std::fs::remove_file(&out).ok();
+    }
 }
