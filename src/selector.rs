@@ -15,6 +15,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_DESTROY, WM_KEYDOWN, WNDCLASSW,
 };
 
+use crate::capture::wgcap::{enumerate_monitors, MonitorInfo};
+
 const WS_EX_LAYERED: u32 = 0x00080000;
 const WS_EX_TOPMOST: u32 = 0x00000008;
 const WS_EX_TOOLWINDOW: u32 = 0x00000080;
@@ -58,10 +60,22 @@ pub fn select_region<F: FnOnce(Outcome) + Send + 'static>(callback: F) {
 
 unsafe fn run_selector() -> Outcome {
     unsafe {
+        let monitors = enumerate_monitors().unwrap_or_default();
+        let primary = monitors
+            .iter()
+            .find(|m| m.primary)
+            .cloned()
+            .unwrap_or_else(|| {
+                monitors
+                    .first()
+                    .cloned()
+                    .expect("at least one monitor should exist after enumerate_monitors")
+            });
+
         let hinstance = GetModuleHandleW(null_mut());
         let class_name: Vec<u16> = "ORR_SELECT_OVERLAY\0".encode_utf16().collect();
 
-        let wc = WNDCLASSW {
+        let wc = windows_sys::Win32::UI::WindowsAndMessaging::WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0,
@@ -75,10 +89,7 @@ unsafe fn run_selector() -> Outcome {
         };
         RegisterClassW(&wc);
 
-        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        let (vx, vy, vw, vh) = virtual_bounds();
 
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -117,6 +128,14 @@ unsafe fn run_selector() -> Outcome {
         UnregisterClassW(class_name.as_ptr(), hinstance);
         out
     }
+}
+
+unsafe fn virtual_bounds() -> (i32, i32, i32, i32) {
+    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    (vx, vy, vw, vh)
 }
 
 fn pt(lparam: LPARAM) -> (i32, i32) {
