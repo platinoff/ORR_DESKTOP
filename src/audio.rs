@@ -5,7 +5,7 @@ use cpal::{
     Sample, Stream, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Available audio sources
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,14 +43,19 @@ pub fn init_capture(source: AudioSource, _sample_rate: u32) -> Result<AudioStrea
             .ok_or_else(|| AudioError::NoDevice)?,
     };
 
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let buf_clone = buffer.clone();
+
     let stream = device
         .build_input_stream(
             AUDIO_CONFIG,
             move |data: &[f32], _| {
-                // Callback provides interleaved f32 samples
+                if let Ok(mut guard) = buf_clone.lock() {
+                    guard.extend_from_slice(data);
+                }
             },
             move |e| {
-                let _ = std::cell::Cell::new(None).set(Some(format!("{e}")));
+                eprintln!("[orr] audio stream error: {e}");
             },
             None,
         )
@@ -60,7 +65,8 @@ pub fn init_capture(source: AudioSource, _sample_rate: u32) -> Result<AudioStrea
         stream,
         source,
         config: AUDIO_CONFIG,
-        buffer: Vec::new(),
+        buffer,
+        local_buffer: Vec::new(),
     })
 }
 
@@ -69,7 +75,8 @@ pub struct AudioStream {
     stream: Stream,
     source: AudioSource,
     config: StreamConfig,
-    buffer: Vec<f32>,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    local_buffer: Vec<f32>,
 }
 
 impl AudioStream {
@@ -85,10 +92,15 @@ impl AudioStream {
 
     /// Read the latest captured audio samples
     pub fn read(&mut self) -> Option<&[f32]> {
-        if self.buffer.is_empty() {
-            None
+        if let Ok(mut guard) = self.buffer.lock() {
+            if guard.is_empty() {
+                None
+            } else {
+                self.local_buffer = std::mem::take(&mut *guard);
+                Some(&self.local_buffer)
+            }
         } else {
-            Some(&self.buffer)
+            None
         }
     }
 
