@@ -305,7 +305,7 @@ impl App {
                     self.exit_pending = true;
                 }
             }
-"perf" => {
+            "perf" => {
                 self.settings.performance_mode = !self.settings.performance_mode;
                 self.save_settings();
             }

@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_DESTROY, WM_KEYDOWN, WNDCLASSW,
 };
 
-use crate::capture::wgcap::{enumerate_monitors, MonitorInfo};
+use crate::capture::wgcap::{MonitorInfo, enumerate_monitors};
 
 const WS_EX_LAYERED: u32 = 0x00080000;
 const WS_EX_TOPMOST: u32 = 0x00000008;
