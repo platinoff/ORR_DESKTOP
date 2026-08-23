@@ -7,8 +7,8 @@ cargo build --release
 
 REL_DIR="target/release"
 DIST_DIR="dist"
-rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
+rm -rf "$DIST_DIR"/* 2>/dev/null || true
 
 cp "$REL_DIR/orr_desktop.exe" "$DIST_DIR/"
 
