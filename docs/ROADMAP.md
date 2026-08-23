@@ -29,9 +29,11 @@ Phased bands. Each phase is one drain: S0 → implement/docs → fmt →
       wall-clock pacing (blt duration cannot drift fps), virtual-screen
       clamp for multi-monitor bounds; crop **parity test vs real gdigrab**
       (same rect → same geometry; channel means within tolerance).
-- [ ] **P3** Windows.Graphics.Capture primary source via `windows-rs`
-      (`capture/wgcap.rs`); per-monitor DPI and negative-origin handling
-      completed there; GDI stays as fallback.
+- [x] **P3** Windows.Graphics.Capture primary source via `windows-rs`
+      (`capture/wgcap.rs`): free-threaded frame pool, D3D11 staging
+      readback, physical-pixel crop mapping (DEVMODE-based, DPI-safe),
+      negative-origin monitors, cursor toggle, `native_source()` WGC→GDI
+      fallback; x50 start/stop leak-cycle test.
 
 ## Phase 3 — Native encode + mux (no side applications)
 

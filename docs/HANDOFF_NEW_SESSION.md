@@ -10,8 +10,11 @@ dependency (never vendored); the app locates it via `ORR_FFMPEG`, then `%PATH%`.
 - Verified: fullscreen 3 s encode (AMF GPU, h264 1920x1080@30), exact region
   crop 960x720, GUI smoke tests alive. Zero rustc/clippy warnings.
 - Pure-Rust rewrite started (see docs/ROADMAP.md): P1 pipeline trait seam +
-  pump, P2 native GDI BitBlt source with gdigrab crop-parity test. Legacy
-  ffmpeg spawn remains the default record path until P4.
+  pump, P2 native GDI BitBlt source with gdigrab crop-parity test, P3 native
+  Windows.Graphics.Capture source (`capture/wgcap.rs`, free-threaded pool +
+  D3D11 staging readback, DEVMODE physical-crop mapping, cursor toggle,
+  WGC→GDI fallback via `native_source()`). Legacy ffmpeg spawn remains the
+  default record path until P4.
 
 ## Layout
 
@@ -19,6 +22,9 @@ dependency (never vendored); the app locates it via `ORR_FFMPEG`, then `%PATH%`.
 |------|------|
 | `src/main.rs` | tray + winit loop, `UserEvent{Selector,Tick,Finished,Menu}` |
 | `src/recorder.rs` | encoder detect/probe (`detect_encoders`, `probe_encoder`), `build_command`, `start`, graceful stop |
+| `src/pipeline.rs` | pure-Rust seam: `FrameSource`/`VideoEncoder`/`Muxer` traits + `run()` pump |
+| `src/capture/gdi.rs` | BitBlt frame source (P2) |
+| `src/capture/wgcap.rs` | Windows.Graphics.Capture source (P3) + WGC→GDI `native_source()` picker |
 | `src/selector.rs` | Win32 `WS_EX_LAYERED` rubber-band overlay |
 | `src/settings.rs` | persisted settings |
 
