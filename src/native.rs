@@ -125,6 +125,7 @@ pub fn run_blocking(
     let mut muxer = Mp4Muxer::create(out_path);
 
     let spec = source.spec();
+    let start_time = std::time::Instant::now();
     source.start()?;
     encoder.init(&spec)?;
     muxer.open(&TrackInfo::from(spec))?;
@@ -153,7 +154,7 @@ pub fn run_blocking(
         match source.next_frame() {
             Some(frame) => {
                 stats.frames_source += 1;
-                stats.duration_ms = frame.pts_ms;
+                stats.duration_ms = frame.pts_ms + (1000 / spec.fps as u64);
                 for sample in encoder.feed(&frame)? {
                     stats.samples_written += 1;
                     muxer.write_sample(&sample)?;
@@ -167,6 +168,11 @@ pub fn run_blocking(
         muxer.write_sample(&sample)?;
     }
     stats.frames_encoded = stats.frames_source;
+    if stats.frames_source > 0 {
+        let expected_duration_ms = (stats.frames_source as u64 * 1000) / spec.fps as u64;
+        let elapsed_ms = start_time.elapsed().as_millis() as u64;
+        stats.duration_ms = std::cmp::max(stats.duration_ms, std::cmp::max(expected_duration_ms, elapsed_ms));
+    }
     let out = muxer.finalize()?;
     Ok((stats, out))
 }

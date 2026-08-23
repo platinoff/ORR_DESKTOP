@@ -102,13 +102,14 @@ pub fn run(
 ) -> Result<(PipelineStats, PathBuf)> {
     let mut stats = PipelineStats::default();
     let spec = source.spec();
+    let start_time = std::time::Instant::now();
     source.start()?;
     encoder.init(&spec)?;
     muxer.open(&TrackInfo::from(spec))?;
 
     while let Some(frame) = source.next_frame() {
         stats.frames_source += 1;
-        stats.duration_ms = frame.pts_ms;
+        stats.duration_ms = frame.pts_ms + (1000 / spec.fps as u64);
         for sample in encoder.feed(&frame)? {
             stats.samples_written += 1;
             muxer.write_sample(&sample)?;
@@ -119,6 +120,11 @@ pub fn run(
         muxer.write_sample(&sample)?;
     }
     stats.frames_encoded = stats.frames_source;
+    if stats.frames_source > 0 {
+        let expected_duration_ms = (stats.frames_source as u64 * 1000) / spec.fps as u64;
+        let elapsed_ms = start_time.elapsed().as_millis() as u64;
+        stats.duration_ms = std::cmp::max(stats.duration_ms, std::cmp::max(expected_duration_ms, elapsed_ms));
+    }
     let out = muxer.finalize()?;
     Ok((stats, out))
 }
@@ -249,7 +255,7 @@ mod tests {
 
         assert_eq!(stats.frames_source, 5);
         assert_eq!(stats.frames_encoded, 5);
-        assert_eq!(stats.duration_ms, (4 * 1000) / 30); // last pts
+        assert_eq!(stats.duration_ms, (5 * 1000) / 30); // total duration for 5 frames at 30fps
 
         assert_eq!(mux.opened_with, Some(TrackInfo::from(spec)));
         assert_eq!(mux.samples.len(), 6); // 5 frames + 1 flushed tail
