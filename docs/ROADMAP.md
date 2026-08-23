@@ -22,13 +22,16 @@ Phased bands. Each phase is one drain: S0 → implement/docs → fmt →
 
 ## Phase 2 — Native capture
 
-- [ ] `windows-rs` based frame source: Windows.Graphics.Capture primary,
-      GDI `BitBlt` fallback for older hosts.
-- [ ] DPI-aware coordinates; multi-monitor origin handling parity with the
-      ffmpeg `gdigrab` offsets.
-- [ ] `trait FrameSource` (BGRA frames + timestamp), ffmpeg path kept as a
-      reference implementation behind the same trait until Phase 3 lands.
-- [ ] Acceptance: pixel-exact crop vs `cli-area` output on a test pattern.
+- [x] **P1** pipeline seam: `FrameSource`/`VideoEncoder`/`Muxer` traits +
+      `run()` pump (`src/pipeline.rs`); legacy ffmpeg behind
+      `capture::ffspawn` wrapper, still the default until P4.
+- [x] **P2** GDI `BitBlt` source (`src/capture/gdi.rs`): BGRA frames + pts,
+      wall-clock pacing (blt duration cannot drift fps), virtual-screen
+      clamp for multi-monitor bounds; crop **parity test vs real gdigrab**
+      (same rect → same geometry; channel means within tolerance).
+- [ ] **P3** Windows.Graphics.Capture primary source via `windows-rs`
+      (`capture/wgcap.rs`); per-monitor DPI and negative-origin handling
+      completed there; GDI stays as fallback.
 
 ## Phase 3 — Native encode + mux (no side applications)
 

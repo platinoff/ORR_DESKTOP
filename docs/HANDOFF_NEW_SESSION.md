@@ -9,6 +9,9 @@ dependency (never vendored); the app locates it via `ORR_FFMPEG`, then `%PATH%`.
   graceful stop (ffmpeg `q` on stdin), MP4 output.
 - Verified: fullscreen 3 s encode (AMF GPU, h264 1920x1080@30), exact region
   crop 960x720, GUI smoke tests alive. Zero rustc/clippy warnings.
+- Pure-Rust rewrite started (see docs/ROADMAP.md): P1 pipeline trait seam +
+  pump, P2 native GDI BitBlt source with gdigrab crop-parity test. Legacy
+  ffmpeg spawn remains the default record path until P4.
 
 ## Layout
 
