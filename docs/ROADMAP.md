@@ -37,17 +37,20 @@ Phased bands. Each phase is one drain: S0 → implement/docs → fmt →
 
 ## Phase 3 — Native encode + mux (no side applications)
 
-- [ ] `trait VideoEncoder` (feed BGRA frame → bitstream) with hardware
-      discovery preserved (probe stays).
-- [ ] Software encoder decision: pure-Rust AV1 (`rav1e`) vs in-process C
-      (`openh264` bundled via -sys crate). Hard rule in both cases: **no
-      external process**; see ARCHITECTURE_PURE_RUST.md tradeoff table.
+- [x] `trait VideoEncoder` (feed BGRA frame → bitstream) with hardware
+      discovery preserved (`probe` stays for the legacy path).
+- [x] Software encoder decision: **in-process C via `openh264` crate**
+      (bundled source build, linked into the binary; no external process).
+      In-house BGRA→I420 conversion (BT.601 limited range, fixed point).
 - [ ] Hardware encoders via vendor APIs in-process where feasible
       (DXGI/D3D11 interop); graceful fallback chain mirrors Phase 0.
-- [ ] MP4 muxing in-crate (`mp4-muxer` crate candidate); remove the
-      `std::process::Command` ffmpeg spawn entirely.
-- [ ] Acceptance: binary runs with **zero** external executables on a clean
-      machine; byte-level sanity of output MP4 (moov present, duration exact).
+- [x] MP4 muxing in-crate (`muxide` crate): fast-start moov-before-mdat,
+      Annex-B samples accepted directly, exact duration on finalize.
+      Default record path is now native (`ORR_LEGACY=1` restores ffmpeg);
+      the ffmpeg spawn still exists behind the legacy flag only.
+- [x] Acceptance: native pipeline runs with **zero** external executables
+      (Toolhelp process-count test), MP4 byte-level sanity (ftyp first,
+      moov before mdat, duration == frames/fps ±1).
 
 ## Phase 4 — Recording UX
 

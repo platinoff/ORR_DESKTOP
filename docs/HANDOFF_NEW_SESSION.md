@@ -1,44 +1,55 @@
 # ORR Desktop Recorder — HANDOFF
 
-Windows system-tray screen recorder in pure Rust. ffmpeg is an external runtime
-dependency (never vendored); the app locates it via `ORR_FFMPEG`, then `%PATH%`.
+Windows system-tray screen recorder in Rust. **Default record path is now the
+native in-process pipeline** (WGC/GDI → OpenH264 → muxide MP4, zero external
+processes). The legacy ffmpeg child-process path remains behind
+`ORR_LEGACY=1` (ffmpeg located via `ORR_FFMPEG`, then `%PATH%`).
 
 ## State (last session)
 
-- Working end-to-end: tray + menu, fullscreen and rubber-band region capture,
-  graceful stop (ffmpeg `q` on stdin), MP4 output.
-- Verified: fullscreen 3 s encode (AMF GPU, h264 1920x1080@30), exact region
-  crop 960x720, GUI smoke tests alive. Zero rustc/clippy warnings.
-- Pure-Rust rewrite started (see docs/ROADMAP.md): P1 pipeline trait seam +
-  pump, P2 native GDI BitBlt source with gdigrab crop-parity test, P3 native
-  Windows.Graphics.Capture source (`capture/wgcap.rs`, free-threaded pool +
-  D3D11 staging readback, DEVMODE physical-crop mapping, cursor toggle,
-  WGC→GDI fallback via `native_source()`). Legacy ffmpeg spawn remains the
-  default record path until P4.
+- Native pipeline live end-to-end (P4): `native::run_blocking/spawn_session`
+  wires `capture::wgcap::native_source` → `encode::sw::SwH264Encoder` →
+  `mux::mp4::Mp4Muxer`. Tray + both CLI commands use it by default.
+- Acceptance green: 32/32 tests — ftyp-first / moov-before-mdat / duration ==
+  frames/fps ±1 box-walk test, duplicate-PTS bump, Annex-B keyframe-first,
+  BT.601 fixed-point I420 vectors, and an ffmpeg.exe process-count-stability
+  e2e (no child spawned or leaked).
+- Known perf gap (documented, P6 follow-up): SW encode sustains ~18–20 fps at
+  1080p release on the dev host — single-slice OpenH264 (SM_SINGLE_SLICE
+  blocks its internal threading) + scalar BGRA→I420. Candidates: slice-based
+  multithreading via `max_slice_len`, converter SIMD. Legacy path unaffected.
+- Pure-Rust rewrite state: P1 seam, P2 GDI source, P3 WGC source
+  (`capture/wgcap.rs`, free-threaded pool + D3D11 staging readback, DEVMODE
+  physical-crop mapping, cursor toggle, WGC→GDI fallback), P4 SW encode +
+  MP4 mux + native default (this band). HW encoders = P6.
 
 ## Layout
 
 | File | Role |
 |------|------|
-| `src/main.rs` | tray + winit loop, `UserEvent{Selector,Tick,Finished,Menu}` |
-| `src/recorder.rs` | encoder detect/probe (`detect_encoders`, `probe_encoder`), `build_command`, `start`, graceful stop |
+| `src/main.rs` | tray + winit loop; `RunningSession::{Legacy,Native}`; native default with `ORR_LEGACY=1` escape hatch |
+| `src/native.rs` | native session orchestration: rect even-ing, desktop bounds, stop-flag source wrapper, `run_blocking`/`spawn_session` |
+| `src/recorder.rs` | legacy ffmpeg detect/probe/build_command/start/graceful stop; `Quality` presets (cq + bitrate_mbps) |
 | `src/pipeline.rs` | pure-Rust seam: `FrameSource`/`VideoEncoder`/`Muxer` traits + `run()` pump |
 | `src/capture/gdi.rs` | BitBlt frame source (P2) |
 | `src/capture/wgcap.rs` | Windows.Graphics.Capture source (P3) + WGC→GDI `native_source()` picker |
+| `src/encode/sw.rs` | OpenH264 encoder stage (P4): in-house BGRA→I420, bitrate RC from Quality preset, screen-content usage |
+| `src/mux/mp4.rs` | muxide MP4 muxer stage (P4): fast-start, strictly-increasing PTS guard |
 | `src/selector.rs` | Win32 `WS_EX_LAYERED` rubber-band overlay |
 | `src/settings.rs` | persisted settings |
 
 ## CLI
 
 ```
-orr-desktop-recorder.exe            # GUI (tray)
-  probe                             # list encoders + chosen pick
-  cli-rec [seconds] [out.mp4]       # fullscreen
-  cli-area X Y W H [seconds] [out]  # region crop
+orr_desktop.exe                     # GUI (tray)
+  probe                             # legacy ffmpeg encoder report
+  cli-rec [seconds] [out.mp4]       # fullscreen (native by default)
+  cli-area X Y W H [seconds] [out]  # region crop (area rounded to even)
   --version / --help
 ```
 
-`ORR_PRINT_CMD=1` prints the generated ffmpeg argv instead of running.
+Env: `ORR_LEGACY=1` → ffmpeg child-process path; `ORR_FFMPEG` → legacy binary;
+`ORR_PRINT_CMD=1` prints the generated legacy argv instead of running.
 
 ## Build
 

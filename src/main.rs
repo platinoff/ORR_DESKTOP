@@ -1,6 +1,7 @@
 mod capture;
 mod encode;
 mod mux;
+mod native;
 mod pipeline;
 mod recorder;
 mod selector;
@@ -13,6 +14,7 @@ use selector::Outcome;
 use settings::Settings;
 use std::path::PathBuf;
 use std::process::ChildStdin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use winit::application::ApplicationHandler;
@@ -28,10 +30,42 @@ enum UserEvent {
     Menu(String),
 }
 
-struct Session {
-    stdin: ChildStdin,
-    started: Instant,
-    path: PathBuf,
+/// One active recording: either the legacy ffmpeg child process or a P4+
+/// native in-process pipeline worker.
+enum RunningSession {
+    Legacy {
+        stdin: ChildStdin,
+        started: Instant,
+        path: PathBuf,
+    },
+    Native {
+        handle: native::NativeSessionHandle,
+        started: Instant,
+        path: PathBuf,
+    },
+}
+
+impl RunningSession {
+    fn started(&self) -> Instant {
+        match self {
+            RunningSession::Legacy { started, .. } => *started,
+            RunningSession::Native { started, .. } => *started,
+        }
+    }
+
+    fn path(&self) -> &PathBuf {
+        match self {
+            RunningSession::Legacy { path, .. } => path,
+            RunningSession::Native { path, .. } => path,
+        }
+    }
+}
+
+fn legacy_mode() -> bool {
+    matches!(
+        std::env::var("ORR_LEGACY").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+    )
 }
 
 struct Menus {
@@ -54,7 +88,7 @@ struct App {
     settings: Settings,
     tray: Option<TrayIcon>,
     menus: Option<Menus>,
-    session: Option<Session>,
+    session: Option<RunningSession>,
     selecting: bool,
     exiting: bool,
     exit_pending: bool,
@@ -68,17 +102,25 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("-h") | Some("--help") => {
-            println!("ORR Desktop Recorder - system-tray screen recorder (ffmpeg)");
+            println!(
+                "ORR Desktop Recorder - system-tray screen recorder (native in-process pipeline)"
+            );
             println!();
             println!("Usage:");
             println!("  orr_desktop                     run the tray application");
-            println!("  orr_desktop probe               show detected ffmpeg encoders");
+            println!(
+                "  orr_desktop probe               show detected ffmpeg encoders (legacy info)"
+            );
             println!("  orr_desktop cli-rec [s] [out]   record fullscreen for s seconds");
             println!("  orr_desktop cli-area X Y W H [s] [out]");
             println!("                                  record a fixed region");
             println!("  orr_desktop --version           print version");
             println!();
-            println!("Environment: ORR_FFMPEG overrides the ffmpeg path.");
+            println!("Recording uses the native pipeline (WGC/GDI capture + OpenH264 + MP4 muxing");
+            println!(
+                "in-process). Environment: ORR_LEGACY=1 falls back to the ffmpeg child-process"
+            );
+            println!("path; ORR_FFMPEG overrides the legacy ffmpeg binary.");
             Ok(())
         }
         Some("probe") => {
@@ -196,6 +238,53 @@ impl App {
         if self.session.is_some() {
             return;
         }
+        if let Err(e) = recorder::validate_output_dir(&self.settings.output_dir) {
+            self.fatal(&format!("{e}"));
+            return;
+        }
+        let path = recorder::output_file(&self.settings.output_dir);
+        if !legacy_mode() {
+            self.begin_native(mode, path);
+        } else {
+            self.begin_legacy(mode, path);
+        }
+    }
+
+    fn begin_native(&mut self, mode: Mode, path: PathBuf) {
+        let rect = match mode {
+            Mode::FullScreen => match native::full_desktop_rect() {
+                Ok(r) => r,
+                Err(e) => {
+                    self.fatal(&format!("cannot size desktop region: {e:#}"));
+                    return;
+                }
+            },
+            Mode::Area(r) => r,
+        };
+        let params = native::SessionParams {
+            rect,
+            fps: self.settings.fps,
+            cursor: self.settings.capture_mouse,
+            quality: self.settings.quality,
+        };
+        let proxy = self.proxy.clone();
+        match native::spawn_session(params, path.clone(), move |res| {
+            let _ = proxy.send_event(UserEvent::Finished(res));
+        }) {
+            Ok(handle) => {
+                self.set_tooltip("ORR starting...");
+                self.session = Some(RunningSession::Native {
+                    handle,
+                    started: Instant::now(),
+                    path,
+                });
+                self.sync_menu();
+            }
+            Err(e) => self.fatal(&format!("cannot start native recording: {e:#}")),
+        }
+    }
+
+    fn begin_legacy(&mut self, mode: Mode, path: PathBuf) {
         if self.caps.encoders.is_empty() {
             self.fatal("no usable h264 encoder found - is ffmpeg installed and on PATH?");
             return;
@@ -210,11 +299,6 @@ impl App {
                 }
             },
         };
-        if let Err(e) = recorder::validate_output_dir(&self.settings.output_dir) {
-            self.fatal(&format!("{e}"));
-            return;
-        }
-        let path = recorder::output_file(&self.settings.output_dir);
         let cmd = match capture::ffspawn::build_command(
             &self.ffmpeg,
             &self.settings,
@@ -234,7 +318,7 @@ impl App {
                 self.set_tooltip("ORR starting...");
                 let monitor_path = path.clone();
                 self.spawn_monitor(spawned.child, monitor_path);
-                self.session = Some(Session {
+                self.session = Some(RunningSession::Legacy {
                     stdin: spawned.stdin,
                     started: Instant::now(),
                     path,
@@ -298,9 +382,16 @@ impl App {
     }
 
     fn stop(&mut self) {
-        if let Some(s) = &mut self.session {
-            capture::ffspawn::graceful_stop(&mut s.stdin);
-            self.set_tooltip("ORR finalizing mp4...");
+        match &mut self.session {
+            Some(RunningSession::Legacy { stdin, .. }) => {
+                capture::ffspawn::graceful_stop(stdin);
+                self.set_tooltip("ORR finalizing mp4...");
+            }
+            Some(RunningSession::Native { handle, .. }) => {
+                handle.stop();
+                self.set_tooltip("ORR finalizing mp4...");
+            }
+            None => {}
         }
     }
 
@@ -311,7 +402,7 @@ impl App {
 
     fn elapsed_string(&self) -> Option<String> {
         self.session.as_ref().map(|s| {
-            let el = s.started.elapsed().as_secs();
+            let el = s.started().elapsed().as_secs();
             format!(
                 "ORR REC {:02}:{:02}:{:02}",
                 el / 3600,
@@ -420,7 +511,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let err = res.err();
                 if let Some(s) = self.session.take() {
                     match &err {
-                        None => println!("[orr] saved {}", s.path.display()),
+                        None => println!("[orr] saved {}", s.path().display()),
                         Some(e) => eprintln!("[orr] {e}"),
                     }
                 }
@@ -606,6 +697,33 @@ fn app_icon() -> Result<Icon> {
     Ok(Icon::from_rgba(rgba, S, S)?)
 }
 
+fn cli_native(seconds: u64, rect: Rect, out: PathBuf) -> Result<()> {
+    let st = Settings::load(&Settings::config_path()).sanitized();
+    recorder::validate_output_dir(out.parent().unwrap_or(std::path::Path::new(".")))?;
+    let params = native::SessionParams {
+        rect,
+        fps: st.fps,
+        cursor: st.capture_mouse,
+        quality: st.quality,
+    };
+    // Watchdog ends the stream after `seconds`; the pipeline still finalizes.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(seconds));
+        stop2.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let (stats, path) = native::run_blocking(&params, out, Arc::clone(&stop), None)?;
+    println!(
+        "[cli] done: {} frames / {} encoded, {} bytes -> {}",
+        stats.frames_source,
+        stats.frames_encoded,
+        std::fs::metadata(&path)?.len(),
+        path.display()
+    );
+    Ok(())
+}
+
 fn cli_area(args: &[String]) -> Result<()> {
     let nums: Vec<i64> = args[2..].iter().filter_map(|s| s.parse().ok()).collect();
     if nums.len() < 5 {
@@ -622,6 +740,11 @@ fn cli_area(args: &[String]) -> Result<()> {
         Some(p) => PathBuf::from(p),
         None => recorder::output_file(&std::env::current_dir()?),
     };
+
+    if !legacy_mode() {
+        println!("[cli] area {rect:?} for {seconds}s via native in-process pipeline");
+        return cli_native(seconds, rect, out);
+    }
 
     let ffmpeg = std::env::var("ORR_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
     let caps = recorder::detect(&ffmpeg);
@@ -653,6 +776,12 @@ fn cli_record(args: &[String]) -> Result<()> {
         Some(p) => PathBuf::from(p),
         None => recorder::output_file(&std::env::current_dir()?),
     };
+
+    if !legacy_mode() {
+        println!("[cli] recording {seconds}s fullscreen via native in-process pipeline");
+        let desktop = native::full_desktop_rect()?;
+        return cli_native(seconds, desktop, out);
+    }
 
     let ffmpeg = std::env::var("ORR_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
     let caps = recorder::detect(&ffmpeg);
