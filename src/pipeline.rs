@@ -85,15 +85,13 @@ pub trait Muxer {
     fn finalize(&mut self) -> Result<PathBuf>;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[derive(Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct PipelineStats {
     pub frames_source: usize,
     pub frames_encoded: usize,
     pub samples_written: usize,
     pub duration_ms: u64,
 }
-
 
 /// Pump: source -> encoder -> muxer, with guaranteed flush order
 /// (source drained, then encoder finished, then muxer finalized).

@@ -1,3 +1,4 @@
+mod audio;
 mod capture;
 mod encode;
 mod mux;
@@ -87,9 +88,7 @@ fn main() -> Result<()> {
             println!("  orr_desktop --version           print version");
             println!();
             println!("Recording uses the native in-process pipeline (WGC/GDI capture + OpenH264 +");
-            println!(
-                "MP4 muxing) - no ffmpeg required. `probe` still reports legacy ffmpeg"
-            );
+            println!("MP4 muxing) - no ffmpeg required. `probe` still reports legacy ffmpeg");
             println!("encoders when ORR_FFMPEG is set (diagnostics only).");
             Ok(())
         }
@@ -232,9 +231,15 @@ impl App {
             quality: self.settings.quality,
         };
         let proxy = self.proxy.clone();
-match native::spawn_session(params, path.clone(), move |res| {
-            let _ = proxy.send_event(UserEvent::Finished(res));
-        }) {
+        let audio_source = audio::AudioSource::Microphone;
+        match native::spawn_session(
+            params,
+            path.clone(),
+            move |res| {
+                let _ = proxy.send_event(UserEvent::Finished(res));
+            },
+            audio_source,
+        ) {
             Ok(handle) => {
                 self.set_tooltip("ORR starting...");
                 self.session = Some(RunningSession {
@@ -603,7 +608,14 @@ fn cli_native(seconds: u64, rect: Rect, out: PathBuf) -> Result<()> {
         std::thread::sleep(Duration::from_secs(seconds));
         stop2.store(true, std::sync::atomic::Ordering::Relaxed);
     });
-    let (stats, path) = native::run_blocking(&params, out, Arc::clone(&stop), Arc::new(AtomicBool::new(false)), None)?;
+    let (stats, path) = native::run_blocking(
+        &params,
+        out,
+        Arc::clone(&stop),
+        Arc::new(AtomicBool::new(false)),
+        None,
+        audio::AudioSource::Microphone,
+    )?;
     println!(
         "[cli] done: {} frames / {} encoded, {} bytes -> {}",
         stats.frames_source,
