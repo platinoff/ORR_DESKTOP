@@ -16,7 +16,7 @@ jobs:
 
       - name: Install GNU toolchain
         run: |
-          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
           rustup default stable-x86_64-pc-windows-gnu
 
       - name: Add MinGW to PATH
