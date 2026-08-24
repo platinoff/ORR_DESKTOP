@@ -7,12 +7,29 @@ processes). The legacy ffmpeg child-process path remains behind
 
 ## State (last session)
 
+- **P6 SW perf band** (measured on dev host, 1080p, release):
+  - BGRA→I420 rewritten: bounds-check-free loops + horizontal row bands on
+    `std::thread::scope` (no deps). 4.86 → **1.52 ms/frame (3.2×)**;
+    bit-exactness vs serial path is test-enforced.
+  - **Slice multithreading unlocked**: openh264-0.9.x pins SM_SINGLE_SLICE,
+    but `max_slice_len(64 KiB)` switches to SM_SIZELIMITED_SLICE whose
+    THREAD_FULLY_FIRE_MODE really threads (verified in bundled source,
+    encoder_ext.cpp:3751). Enabled with 2–4 threads at ≥1280×720 only.
+  - Encoder stage alone: static content ~14–15 ms/frame (threading barely
+    helps), worst-case full-motion gradient **55 → 25 ms/frame (2.2×)**.
+  - End-to-end `cli-rec 8` static desktop: 19.5 → **22.3 fps**; the win is
+    mostly that scrolling/video content no longer collapses under 20 fps.
+  - Corrected diagnosis: the converter was never the main wall — OpenH264
+    single-slice encode is. Hardware encoders remain the primary fix.
+  - Committed probes (`--ignored --nocapture`): `perf_1080p_conversion_throughput`,
+    `perf_encode_1080p_stage`.
 - Publication band (Phase 1) shipped: MIT `LICENSE` + Cargo.toml metadata
   (`license`, `repository`, `description`); CI workflow
   `.github/workflows/ci.yml` (fmt --check → clippy --all-targets → cargo test
   on `stable-x86_64-pc-windows-gnu` at windows-latest, MSYS2 MinGW on PATH);
   README rewritten for the native-default reality; ARCHITECTURE status banner;
-  empty root `ORR_DESKTOP.md` removed.
+  empty root `ORR_DESKTOP.md` removed. First CI runs: run 1 failed (minimal
+  profile lacks rustfmt/clippy components), run 2 green after adding them.
 - Clippy zero-warnings: fixed 4× `unsafe_op_in_unsafe_fn` (`selector.rs`
   virtual_bounds), `ok_or_else` → `ok_or`, unused imports/vars; intentional
   API surface (audio device listing, menu ids, legacy `Quality::cq`) marked
