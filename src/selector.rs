@@ -12,10 +12,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetSystemMetrics, IDC_CROSS, LWA_ALPHA, LoadCursorW, PostQuitMessage,
     RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     SW_SHOW, SetLayeredWindowAttributes, ShowWindow, TranslateMessage, UnregisterClassW,
-    WM_DESTROY, WM_KEYDOWN, WNDCLASSW,
+    WM_DESTROY, WM_KEYDOWN,
 };
 
-use crate::capture::wgcap::{MonitorInfo, enumerate_monitors};
+use crate::capture::wgcap::enumerate_monitors;
 
 const WS_EX_LAYERED: u32 = 0x00080000;
 const WS_EX_TOPMOST: u32 = 0x00000008;
@@ -61,7 +61,7 @@ pub fn select_region<F: FnOnce(Outcome) + Send + 'static>(callback: F) {
 unsafe fn run_selector() -> Outcome {
     unsafe {
         let monitors = enumerate_monitors().unwrap_or_default();
-        let primary = monitors
+        let _primary = monitors
             .iter()
             .find(|m| m.primary)
             .cloned()
@@ -131,10 +131,10 @@ unsafe fn run_selector() -> Outcome {
 }
 
 unsafe fn virtual_bounds() -> (i32, i32, i32, i32) {
-    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    let vx = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    let vy = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+    let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
     (vx, vy, vw, vh)
 }
 

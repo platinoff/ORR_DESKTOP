@@ -2,9 +2,7 @@
 //! software encoder and MP4 muxer with no external process involved. Used by
 //! both the tray app (spawned on a worker thread) and the CLI (blocking).
 
-use crate::audio::{
-    AudioSource, AudioStream, init_capture, list_input_devices, list_output_devices,
-};
+use crate::audio::{AudioSource, AudioStream, init_capture};
 use crate::capture::wgcap::{enumerate_monitors, native_source};
 use crate::encode::sw::SwH264Encoder;
 use crate::mux::mp4::Mp4Muxer;
@@ -58,6 +56,7 @@ pub struct SessionParams {
 struct Stoppable<S: FrameSource> {
     inner: S,
     stop: Arc<AtomicBool>,
+    #[allow(dead_code)]
     paused: Arc<AtomicBool>,
     max_frames: Option<u32>,
     emitted: u32,
@@ -171,7 +170,10 @@ pub fn run_blocking(
     if stats.frames_source > 0 {
         let expected_duration_ms = (stats.frames_source as u64 * 1000) / spec.fps as u64;
         let elapsed_ms = start_time.elapsed().as_millis() as u64;
-        stats.duration_ms = std::cmp::max(stats.duration_ms, std::cmp::max(expected_duration_ms, elapsed_ms));
+        stats.duration_ms = std::cmp::max(
+            stats.duration_ms,
+            std::cmp::max(expected_duration_ms, elapsed_ms),
+        );
     }
     let out = muxer.finalize()?;
     Ok((stats, out))
@@ -181,6 +183,8 @@ pub fn run_blocking(
 pub struct NativeSessionHandle {
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    /// Kept alive for the session lifetime; dropping the stream stops capture.
+    #[allow(dead_code)]
     audio: Option<AudioStream>,
 }
 
@@ -221,8 +225,8 @@ pub fn spawn_session(
     audio_source: AudioSource,
 ) -> Result<NativeSessionHandle> {
     let handle = NativeSessionHandle::new();
-    let stop = Arc::clone(&handle.stop);
-    let paused = Arc::clone(&handle.paused);
+    let _stop = Arc::clone(&handle.stop);
+    let _paused = Arc::clone(&handle.paused);
     let stop2 = Arc::clone(&handle.stop);
     let paused2 = Arc::clone(&handle.paused);
     std::thread::Builder::new()

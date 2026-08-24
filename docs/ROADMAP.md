@@ -12,13 +12,14 @@ Phased bands. Each phase is one drain: S0 → implement/docs → fmt →
 - [x] CLI: `probe`, `cli-rec`, `cli-area`, `--version`, `--help`.
 - [x] Settings persistence; verified AMF GPU encode + exact crops on AMD iGPU.
 
-## Phase 1 — Publication readiness
+## Phase 1 — Publication readiness ✅ (shipped)
 
-- [ ] Docs set final review (README/CONCEPT/ROADMAP/ARCHITECTURE).
-- [ ] GitHub repo `platinoff/ORR_DESKTOP`: create, push initial commit.
-- [ ] CI sketch: fmt --check + clippy --all-targets + test on windows-gnu.
-- [ ] Screenshot/GIF assets for README.
-- [ ] License decision (MIT OR Apache-2.0) + LICENSE files.
+- [x] Docs set final review (README/CONCEPT/ROADMAP/ARCHITECTURE).
+- [x] GitHub repo `platinoff/ORR_DESKTOP`: create, push initial commit.
+- [x] CI sketch: fmt --check + clippy --all-targets + test on windows-gnu
+      (`.github/workflows/ci.yml`).
+- [ ] Screenshot/GIF assets for README (owner-provided; tray UI capture).
+- [x] License decision: **MIT** (`LICENSE`, `license` field in Cargo.toml).
 
 ## Phase 2 — Native capture
 

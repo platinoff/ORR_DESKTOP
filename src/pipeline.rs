@@ -123,7 +123,10 @@ pub fn run(
     if stats.frames_source > 0 {
         let expected_duration_ms = (stats.frames_source as u64 * 1000) / spec.fps as u64;
         let elapsed_ms = start_time.elapsed().as_millis() as u64;
-        stats.duration_ms = std::cmp::max(stats.duration_ms, std::cmp::max(expected_duration_ms, elapsed_ms));
+        stats.duration_ms = std::cmp::max(
+            stats.duration_ms,
+            std::cmp::max(expected_duration_ms, elapsed_ms),
+        );
     }
     let out = muxer.finalize()?;
     Ok((stats, out))
@@ -132,7 +135,6 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encode::sw::SwH264Encoder;
 
     struct CountingSource {
         spec: FrameSpec,

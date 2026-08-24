@@ -7,13 +7,25 @@ processes). The legacy ffmpeg child-process path remains behind
 
 ## State (last session)
 
+- Publication band (Phase 1) shipped: MIT `LICENSE` + Cargo.toml metadata
+  (`license`, `repository`, `description`); CI workflow
+  `.github/workflows/ci.yml` (fmt --check → clippy --all-targets → cargo test
+  on `stable-x86_64-pc-windows-gnu` at windows-latest, MSYS2 MinGW on PATH);
+  README rewritten for the native-default reality; ARCHITECTURE status banner;
+  empty root `ORR_DESKTOP.md` removed.
+- Clippy zero-warnings: fixed 4× `unsafe_op_in_unsafe_fn` (`selector.rs`
+  virtual_bounds), `ok_or_else` → `ok_or`, unused imports/vars; intentional
+  API surface (audio device listing, menu ids, legacy `Quality::cq`) marked
+  `#[allow(dead_code)]`.
+- **Fixed release profile bug:** `[profile-release]` table (ignored by cargo)
+  → `[profile.release]`; LTO+strip now actually apply to release builds.
 - Native pipeline live end-to-end (P4): `native::run_blocking/spawn_session`
   wires `capture::wgcap::native_source` → `encode::sw::SwH264Encoder` →
   `mux::mp4::Mp4Muxer`. Tray + both CLI commands use it by default.
 - Acceptance green: 32/32 tests — ftyp-first / moov-before-mdat / duration ==
   frames/fps ±1 box-walk test, duplicate-PTS bump, Annex-B keyframe-first,
   BT.601 fixed-point I420 vectors, and an ffmpeg.exe process-count-stability
-  e2e (no child spawned or leaked).
+  e2e (no child spawned or leaked). fmt --check clean; clippy 0 warnings.
 - Known perf gap (documented, P6 follow-up): SW encode sustains ~18–20 fps at
   1080p release on the dev host — single-slice OpenH264 (SM_SINGLE_SLICE
   blocks its internal threading) + scalar BGRA→I420. Candidates: slice-based
@@ -21,7 +33,7 @@ processes). The legacy ffmpeg child-process path remains behind
 - Pure-Rust rewrite state: P1 seam, P2 GDI source, P3 WGC source
   (`capture/wgcap.rs`, free-threaded pool + D3D11 staging readback, DEVMODE
   physical-crop mapping, cursor toggle, WGC→GDI fallback), P4 SW encode +
-  MP4 mux + native default (this band). HW encoders = P6.
+  MP4 mux + native default. HW encoders = P6.
 
 ## Layout
 

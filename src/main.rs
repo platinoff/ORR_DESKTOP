@@ -25,6 +25,7 @@ const FPS_CHOICES: [u32; 3] = [24, 30, 60];
 #[derive(Debug)]
 enum UserEvent {
     Selector(Outcome),
+    #[allow(dead_code)]
     Tick,
     Finished(Result<PathBuf, String>),
     Menu(String),
@@ -43,13 +44,17 @@ struct Menus {
     record_full: MenuItem,
     record_area: MenuItem,
     stop: MenuItem,
+    /// Referenced by menu-event ids; the items live in the tray menu.
+    #[allow(dead_code)]
     pause: MenuItem,
+    #[allow(dead_code)]
     resume: MenuItem,
     quality: Vec<CheckMenuItem>,
     fps: Vec<CheckMenuItem>,
     encoder: Vec<CheckMenuItem>,
     perf: CheckMenuItem,
     mouse: CheckMenuItem,
+    #[allow(dead_code)]
     choose_dir: MenuItem,
 }
 
@@ -324,7 +329,10 @@ impl App {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     self.settings.output_dir = folder;
                     self.save_settings();
-                    self.set_tooltip(&format!("Output folder: {}", self.settings.output_dir.display()));
+                    self.set_tooltip(&format!(
+                        "Output folder: {}",
+                        self.settings.output_dir.display()
+                    ));
                 }
             }
             other => {
@@ -552,7 +560,15 @@ fn build_tray(settings: &Settings) -> Result<(TrayIcon, Menus)> {
     );
 
     let settings_sub = Submenu::with_id("settings_sub", "Settings", true);
-    settings_sub.append_items(&[&quality_sub, &fps_sub, &enc_sub, &perf, &mouse, &choose_dir, &reset])?;
+    settings_sub.append_items(&[
+        &quality_sub,
+        &fps_sub,
+        &enc_sub,
+        &perf,
+        &mouse,
+        &choose_dir,
+        &reset,
+    ])?;
 
     menu.append_items(&[
         &record_full,

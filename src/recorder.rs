@@ -55,6 +55,7 @@ impl Quality {
             Quality::Low => "Low",
         }
     }
+    #[allow(dead_code)]
     pub fn cq(self) -> i32 {
         match self {
             Quality::Ultra => 18,

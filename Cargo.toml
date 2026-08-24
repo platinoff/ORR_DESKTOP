@@ -2,6 +2,9 @@
 name = "orr_desktop"
 version = "0.1.0"
 edition = "2024"
+description = "Windows system-tray screen recorder: WGC/GDI capture, OpenH264 encode, MP4 mux — zero external processes"
+license = "MIT"
+repository = "https://github.com/platinoff/ORR_DESKTOP"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -34,7 +37,7 @@ windows = { version = "0.62", features = [
 winit = "0.30"
 rfd = "0.15"
 
-[profile-release]
+[profile.release]
 opt-level = 3
 lto = "thin"
 strip = true

@@ -1,5 +1,9 @@
 # Architecture — 100% self-contained Rust pipeline (no side applications)
 
+**Status:** shipped — the native pipeline (P1–P4) is live and is the default
+record path (`src/pipeline.rs` + `native.rs`); the ffmpeg spawn remains only
+behind `ORR_LEGACY=1` in `recorder.rs`.
+
 **Hard requirement.** The application must not launch external processes at
 runtime. The Phase 0 design spawns `ffmpeg.exe`; that is a scaffold, not the
 product. Target state: capture → encode → mux as in-crate modules, one
@@ -40,7 +44,7 @@ src/
     mod.rs       trait FrameSource
     wgcap.rs     Windows.Graphics.Capture (primary)
     gdi.rs       BitBlt fallback
-    ffspawn.rs   legacy ffmpeg path (deleted after Phase 3 acceptance)
+  recorder.rs    legacy ffmpeg path (ORR_LEGACY=1): detect/probe/argv/stop
   encode/
     mod.rs       trait VideoEncoder + registry/probe (priority NVENC>QSV>AMF>SW)
     hw_*.rs      vendor paths via D3D11 interop (per family)
