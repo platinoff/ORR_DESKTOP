@@ -8,7 +8,7 @@ repository = "https://github.com/platinoff/ORR_DESKTOP"
 
 [dependencies]
 anyhow = "1.0.104"
-dirs = "6.0.0"
+dirs = "7.0"
 muda = "0.19.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -35,7 +35,7 @@ windows = { version = "0.62", features = [
   "Win32_System_WinRT_Graphics_Capture",
 ] }
 winit = "0.30"
-rfd = "0.15"
+rfd = "0.17"
 
 [profile.release]
 opt-level = 3
