@@ -931,7 +931,7 @@ mod tests {
         let mean = |b: &[u8]| -> [f64; 4] {
             let n = b.len() / 4;
             let mut acc = [0f64; 4];
-            for px in b.chunks_exact(4) {
+            for px in b.as_chunks::<4>().0 {
                 for c in 0..4 {
                     acc[c] += px[c] as f64;
                 }

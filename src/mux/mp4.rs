@@ -84,7 +84,7 @@ mod tests {
         let mut out = Vec::new();
         for i in 0..n {
             let mut f = Frame::new(spec.width, spec.height, (i as u64 * 1000) / spec.fps as u64);
-            for (px, chunk) in f.data.chunks_exact_mut(4).enumerate() {
+            for (px, chunk) in f.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = (px % spec.width as usize) as u8;
                 chunk.copy_from_slice(&[x.wrapping_mul(7), i as u8, x ^ 0x5A, 255]);
             }

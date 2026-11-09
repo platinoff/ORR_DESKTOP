@@ -148,10 +148,10 @@ fn convert_band(
     v: &mut [u8],
 ) {
     // Per-pixel luma (dropping odd tail column), bounds-check-free via
-    // chunks_exact/zip so LLVM can vectorize the fixed-point math.
+    // as_chunks/zip so LLVM can vectorize the fixed-point math.
     for (row, dst_row) in y.chunks_exact_mut(w).enumerate() {
         let src_row = &bgra[(row_start + row) * stride..][..w * 4];
-        for (px, dst) in src_row.chunks_exact(4).zip(dst_row.iter_mut()) {
+        for (px, dst) in src_row.as_chunks::<4>().0.iter().zip(dst_row.iter_mut()) {
             let b = px[0] as i32;
             let g = px[1] as i32;
             let r = px[2] as i32;
@@ -171,8 +171,10 @@ fn convert_band(
         let u_row = &mut u[(cy - chroma_start) * cw..][..cw];
         let v_row = &mut v[(cy - chroma_start) * cw..][..cw];
         for (pair, (du, dv)) in top
-            .chunks_exact(8)
-            .zip(bottom.chunks_exact(8))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(bottom.as_chunks::<8>().0.iter())
             .zip(u_row.iter_mut().zip(v_row.iter_mut()))
         {
             let rs = pair.0[2] as i32 + pair.0[6] as i32 + pair.1[2] as i32 + pair.1[6] as i32;
@@ -408,7 +410,7 @@ mod tests {
         // input and require identical planes.
         let (w, h) = (1930usize, 1082usize);
         let mut bgra = vec![0u8; w * h * 4];
-        for (px, chunk) in bgra.chunks_exact_mut(4).enumerate() {
+        for (px, chunk) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let x = px % w;
             let y = px / w;
             chunk.copy_from_slice(&[(x * 7) as u8, (y * 13) as u8, (x + y) as u8, 255]);
@@ -501,7 +503,8 @@ mod tests {
                             f.data[0..1000].copy_from_slice(&[255u8; 1000]);
                         }
                         _ => {
-                            for (px, chunk) in f.data.chunks_exact_mut(4).enumerate() {
+                            for (px, chunk) in f.data.as_chunks_mut::<4>().0.iter_mut().enumerate()
+                            {
                                 let x = (px % spec.width as usize) as u8;
                                 chunk.copy_from_slice(&[x, i as u8, 255 - x, 255]);
                             }
@@ -528,7 +531,7 @@ mod tests {
             .map(|i| {
                 let mut f =
                     Frame::new(spec.width, spec.height, (i as u64 * 1000) / spec.fps as u64);
-                for (px, chunk) in f.data.chunks_exact_mut(4).enumerate() {
+                for (px, chunk) in f.data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                     let x = (px % spec.width as usize) as u8;
                     chunk.copy_from_slice(&[x, i as u8, 255 - x, 255]);
                 }
